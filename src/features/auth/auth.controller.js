@@ -8,25 +8,27 @@ const authService = require('./auth.service');
  */
 const register = async (req, res, next) => {
   try {
-    const { name, email, password } = req.body;
+    // --- ATUALIZAÇÃO DA VALIDAÇÃO ---
+    const { name, email, password, cpf, phone } = req.body;
 
-    // Validação de entrada básica
-    if (!name || !email || !password) {
-      return res.status(400).json({ message: 'Nome, e-mail e senha são obrigatórios.' });
+    if (!name || !email || !password || !cpf || !phone) {
+      return res.status(400).json({ message: 'Todos os campos são obrigatórios: nome, e-mail, senha, CPF e celular.' });
     }
+    // --------------------------------
+
     if (password.length < 6) {
       return res.status(400).json({ message: 'A senha deve ter no mínimo 6 caracteres.' });
     }
+    
+    // Passa todos os dados para o serviço
+    const result = await authService.registerUser({ name, email, password, cpf, phone });
 
-    const { accessToken, refreshToken, user } = await authService.registerUser({ name, email, password });
-
-    // Retorna os tokens e os dados do usuário recém-criado
-    return res.status(201).json({ accessToken, refreshToken, user });
+    return res.status(201).json(result);
 
   } catch (error) {
-    // Passa o erro para o middleware de tratamento de erros global.
-    // Isso capturará erros como "e-mail já em uso".
-    next(error);
+    // O service já trata os erros de e-mail/cpf duplicado, então o controller apenas repassa.
+    // O erro 500 deve ser resolvido, mas um erro 409 (Conflict) pode ser retornado.
+    res.status(409).json({ message: error.message });
   }
 };
 

@@ -50,7 +50,7 @@ const saveSession = async (userId, refreshToken, req) => {
  * @returns {Promise<{accessToken: string, refreshToken: string, user: object}>}
  */
 const registerUser = async (userData) => {
-  const { name, email, password } = userData;
+  const { name, email, password, cpf, phone } = userData;
 
   const existingUser = await User.findOne({ where: { email } });
   if (existingUser) {
@@ -59,30 +59,49 @@ const registerUser = async (userData) => {
 
   const transaction = await sequelize.transaction();
   try {
-    const newTenant = await Tenant.create({ name: `${name}'s Organization` }, { transaction });
+    // --- CORREÇÃO DO BUG E ATUALIZAÇÃO ---
+    // 1. Gera o slug para o novo Tenant
+    let slug = generateSlug(`${name}'s Organization`);
+    const existingTenant = await Tenant.findOne({ where: { slug } });
+    if (existingTenant) {
+      slug = `${slug}-${Math.random().toString(36).substring(2, 7)}`;
+    }
+    
+    // 2. Cria o tenant com o slug
+    const newTenant = await Tenant.create({ name: `${name}'s Organization`, slug }, { transaction });
 
     const passwordHash = await bcrypt.hash(password, 10);
 
+    // 3. Cria o usuário com os novos campos
     const newUser = await User.create({
       name,
       email,
       passwordHash,
+      cpf,
+      phoneWhatsE164: phone, // Mapeia o campo 'phone' do formulário para o 'phoneWhatsE164' do DB
       tenantId: newTenant.id,
     }, { transaction });
+    // ------------------------------------
 
     await transaction.commit();
 
+    // ... (resto da função: gerar tokens, salvar sessão, etc.)
     const { accessToken, refreshToken } = generateTokens(newUser);
     await saveSession(newUser.id, refreshToken);
-
+    
     const userToReturn = newUser.toJSON();
     delete userToReturn.passwordHash;
 
     return { accessToken, refreshToken, user: userToReturn };
   } catch (error) {
     await transaction.rollback();
-    // Lança o erro original para que o controller possa tratá-lo
-    throw error;
+    // Adiciona um log para depuração em caso de erro de banco
+    console.error("Erro na transação de registro:", error); 
+    // Erro de violação de unicidade (ex: CPF já existe)
+    if (error.name === 'SequelizeUniqueConstraintError') {
+        throw new Error(`Não foi possível criar a conta. O CPF ou e-mail já está em uso.`);
+    }
+    throw new Error('Ocorreu um erro inesperado durante o cadastro.');
   }
 };
 

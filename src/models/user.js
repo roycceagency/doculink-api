@@ -35,6 +35,16 @@ module.exports = (sequelize, DataTypes) => {
       validate: {
         isEmail: true
       },
+      // --- ATUALIZAÇÕES ---
+    cpf: {
+      type: DataTypes.STRING,
+      allowNull: false, // CPF agora é obrigatório no cadastro
+      unique: true
+    },
+    phoneWhatsE164: { // O nome do campo no DB já é o correto
+        type: DataTypes.STRING,
+        allowNull: false, // Celular agora é obrigatório
+    },
           // --- NOVO CAMPO ---
     passwordHash: {
       type: DataTypes.STRING,
