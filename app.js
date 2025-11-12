@@ -15,36 +15,23 @@ const app = express();
 const PORT = process.env.PORT || 3333;
 
 // 4. Configuração dos Middlewares de Segurança e Parse
-// Helmet adiciona vários cabeçalhos HTTP para proteger contra vulnerabilidades comuns
 app.use(helmet());
-
-// CORS permite que seu frontend (em outro domínio) acesse a API
-// Em produção, configure 'origin' para o domínio específico do seu frontend.
-app.use(cors({ origin: '*' })); // Para desenvolvimento, '*' é aceitável.
-
-// Middleware para parsear o corpo de requisições JSON
+app.use(cors({ origin: '*' }));
 app.use(express.json());
 
 // 5. Configuração das Rotas da API
-// Todas as rotas definidas em 'src/routes/index.js' serão prefixadas com '/api'
 app.use('/api', routes);
 
-
-// 6. Middleware para Tratamento de Erros (Error Handling)
-// Este é um handler de erros genérico que captura exceções não tratadas nas rotas.
-// Ele deve ser o último 'app.use' a ser adicionado.
+// 6. Middleware para Tratamento de Erros
 app.use((err, req, res, next) => {
   console.error('---------------------------------');
   console.error('Um erro não tratado ocorreu:');
   console.error(err.stack);
   console.error('---------------------------------');
-
-  // Retorna uma resposta de erro genérica para o cliente
   res.status(500).json({
     message: err.message || 'Ocorreu um erro interno no servidor.',
   });
 });
-
 
 // 7. Sincronização com o Banco de Dados e Inicialização do Servidor
 const startServer = async () => {
@@ -54,26 +41,15 @@ const startServer = async () => {
     console.log('Conexão com o banco de dados estabelecida com sucesso.');
 
     // --- SINCRONIZAÇÃO DOS MODELOS ---
-    console.log('Sincronizando modelos com o banco de dados...');
-    
-    // Verifica se estamos em ambiente de desenvolvimento para usar o 'force: true'
-    const isDevelopment = process.env.NODE_ENV === 'development';
-    
-    // A opção { alter: true } é uma alternativa menos destrutiva para desenvolvimento.
-    // Ela tenta alterar as tabelas existentes para corresponder ao modelo.
-    // Use { force: true } se quiser recriar tudo do zero.
-    await db.sequelize.sync({ force: isDevelopment }); 
-    
-    if (isDevelopment) {
-      console.warn('------------------------------------------------------------------');
-      console.warn('AVISO: Servidor rodando em modo de desenvolvimento.');
-      console.warn('Banco de dados foi sincronizado com "force: true" (tabelas recriadas).');
-      console.warn('------------------------------------------------------------------');
-    } else {
-      console.log('Modelos sincronizados.');
-    }
+    console.log('Sincronizando modelos com o banco de dados (FORCE TRUE)...');
+    await db.sequelize.sync({ force: true }); // <-- força recriação total das tabelas
 
-    // Inicia o servidor Express para ouvir as requisições
+    console.warn('------------------------------------------------------------------');
+    console.warn('⚠️  Atenção: Banco de dados foi recriado com "force: true".');
+    console.warn('⚠️  Todas as tabelas e dados existentes foram apagados e recriados.');
+    console.warn('------------------------------------------------------------------');
+
+    // Inicia o servidor Express
     app.listen(PORT, () => {
       console.log(`🚀 Servidor rodando na porta ${PORT}`);
       console.log(`🔗 Acessível em: http://localhost:${PORT}`);
@@ -81,7 +57,7 @@ const startServer = async () => {
 
   } catch (error) {
     console.error('❌ Falha ao iniciar o servidor:', error);
-    process.exit(1); // Encerra o processo se não conseguir conectar ao DB
+    process.exit(1);
   }
 };
 
