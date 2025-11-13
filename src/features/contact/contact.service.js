@@ -1,5 +1,6 @@
 'use strict';
 const { Contact } = require('../../models');
+const { Op } = require('sequelize'); // Garanta que Op está importado
 
 /**
  * Cria um novo contato na lista do usuário, evitando duplicatas.
@@ -65,9 +66,28 @@ const deleteContact = async (user, contactId) => {
     await contact.destroy();
 };
 
+
+const inactivateContactsBulk = async (user, contactIds) => {
+  // O 'update' do Sequelize pode atualizar múltiplos registros de uma vez
+  const [affectedCount] = await Contact.update(
+    { status: 'INACTIVE' }, // O que atualizar
+    {
+      where: {
+        ownerId: user.id,   // Garante que o usuário só pode inativar seus próprios contatos
+        id: {
+          [Op.in]: contactIds // A condição: onde o ID está na lista fornecida
+        }
+      }
+    }
+  );
+
+  return { affectedCount };
+};
+
 module.exports = {
   createContact,
   listContacts,
   updateContact,
   deleteContact,
+  inactivateContactsBulk  
 };

@@ -40,6 +40,10 @@ router.patch('/:id', contactController.update); // Rota para atualizar (editar, 
 router.delete('/:id', contactController.delete);   // Rota para deletar
 // -----------------
 
+// --- NOVA ROTA ---
+// Usamos POST ou PATCH para ações em lote. POST é comum para "executar uma ação".
+router.post('/inactivate-bulk', contactController.inactivateBulk);
+// -----------------
 
 // Exporta o roteador configurado para ser usado no arquivo principal de rotas (src/routes/index.js)
 module.exports = router;

@@ -60,4 +60,18 @@ const deleteContact = async (req, res, next) => {
   }
 };
 
-module.exports = { list, create, update, delete: deleteContact };
+const inactivateBulk = async (req, res, next) => {
+  try {
+    const { contactIds } = req.body; // Espera um array de IDs: { "contactIds": ["id1", "id2"] }
+    if (!Array.isArray(contactIds) || contactIds.length === 0) {
+      return res.status(400).json({ message: 'Um array de IDs de contatos é obrigatório.' });
+    }
+    const result = await contactService.inactivateContactsBulk(req.user, contactIds);
+    res.status(200).json(result);
+  } catch (error) {
+    next(error);
+  }
+};
+
+
+module.exports = { list, create, update, delete: deleteContact, inactivateBulk };
