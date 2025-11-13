@@ -8,6 +8,7 @@ const { Document, Signer, OtpCode, AuditLog, Certificate, User, sequelize } = re
 const notificationService = require('../../services/notification.service');
 const documentService = require('../document/document.service');
 const { createAuditLog } = require('../document/document.service');
+const pdfService = require('../../services/pdf.service'); // <-- IMPORTE O NOVO SERVIÇO
 
 const saveSignatureImage = async (base64Image, tenantId, signerId) => {
   if (!base64Image) {
@@ -179,25 +180,27 @@ const verifyOtp = async (signer, otp, req) => {
  * @param {object} req - Objeto da requisição Express.
  */
 const commitSignature = async (document, signer, clientFingerprint, signatureImageBase64, req) => {
+    // Inicia uma transação de banco de dados para garantir que todas as operações ocorram com sucesso ou nenhuma ocorra.
     const transaction = await sequelize.transaction();
     try {
-        // Gera o hash da assinatura (prova criptográfica do evento)
+        // Gera o hash da assinatura: uma prova criptográfica que vincula o documento,
+        // o signatário, o momento da assinatura e o dispositivo.
         const timestampISO = new Date().toISOString();
         const signatureHash = crypto.createHash('sha256')
             .update(document.sha256 + signer.id + timestampISO + clientFingerprint)
             .digest('hex');
 
-        // 1. Salva a imagem da assinatura no disco e obtém o caminho.
+        // Chama a função auxiliar para salvar a imagem da assinatura no disco.
         const artefactPath = await saveSignatureImage(signatureImageBase64, document.tenantId, signer.id);
 
-        // 2. Atualiza o registro do signatário com todas as informações da assinatura.
+        // Atualiza o registro do signatário no banco de dados com os dados da assinatura.
         signer.status = 'SIGNED';
         signer.signedAt = new Date();
         signer.signatureHash = signatureHash;
-        signer.signatureArtefactPath = artefactPath; // Salva o caminho da imagem
+        signer.signatureArtefactPath = artefactPath;
         await signer.save({ transaction });
 
-        // 3. Registra o evento de assinatura na trilha de auditoria.
+        // Registra este ato de assinatura na trilha de auditoria (hash-chain).
         await createAuditLog({
             tenantId: document.tenantId,
             actorKind: 'SIGNER',
@@ -210,34 +213,68 @@ const commitSignature = async (document, signer, clientFingerprint, signatureIma
             payload: { signatureHash, artefactPath }
         }, transaction);
 
-        // 4. Verifica se todos os signatários já assinaram para finalizar o documento.
+        // Verifica se este foi o último signatário a assinar.
         const allSigners = await Signer.findAll({ where: { documentId: document.id }, transaction });
         const allSigned = allSigners.every(s => s.status === 'SIGNED');
 
+        // Se todos assinaram, executa as ações de finalização do documento.
         if (allSigned) {
-            // Se sim, atualiza o status do documento para 'SIGNED'.
+            console.log(`[Doculink] Todos os ${allSigners.length} signatários assinaram o documento ${document.id}. Finalizando...`);
+            
+            // 1. Atualiza o status do documento para 'SIGNED'.
             document.status = 'SIGNED';
             await document.save({ transaction });
-            await createAuditLog({ tenantId: document.tenantId, actorKind: 'SYSTEM', entityType: 'DOCUMENT', entityId: document.id, action: 'STATUS_CHANGED', payload: { newStatus: 'SIGNED' }}, transaction);
 
-            // TODO: Implementar a geração real do PDF do certificado.
+            // 2. Registra a mudança de status do documento na auditoria.
+            await createAuditLog({ 
+                tenantId: document.tenantId, 
+                actorKind: 'SYSTEM', 
+                entityType: 'DOCUMENT', 
+                entityId: document.id, 
+                action: 'STATUS_CHANGED', 
+                payload: { newStatus: 'SIGNED' }
+            }, transaction);
+
+            // 3. Gera o PDF final com os carimbos visuais das assinaturas.
+            const originalPdfPath = path.join(__dirname, '..', '..', '..', document.storageKey);
+            const signedPdfBuffer = await pdfService.embedSignatures(originalPdfPath, allSigners);
+            
+            // Salva o novo PDF com um sufixo "-signed".
+            const signedPdfPath = originalPdfPath.replace(/(\.[\w\d_-]+)$/i, '-signed$1');
+            await fs.writeFile(signedPdfPath, signedPdfBuffer);
+            console.log(`[Doculink] PDF final com assinaturas visuais gerado em: ${signedPdfPath}`);
+
+            // 4. Gera o certificado de conclusão.
+            // (Esta parte ainda pode ser expandida para gerar um PDF de certificado mais detalhado)
             const certificateStorageKey = `certificates/${document.id}.pdf`;
             const certificateSha256 = crypto.createHash('sha256').update('conteudo_pdf_do_certificado_simulado').digest('hex');
-
+            
             await Certificate.create({
                 documentId: document.id,
                 storageKey: certificateStorageKey,
                 sha256: certificateSha256
             }, { transaction });
 
-            await createAuditLog({ tenantId: document.tenantId, actorKind: 'SYSTEM', entityType: 'DOCUMENT', entityId: document.id, action: 'CERTIFICATE_ISSUED'}, transaction);
-            
-            // TODO: Notificar todas as partes que o processo foi concluído.
+            // 5. Registra a emissão do certificado na auditoria.
+            await createAuditLog({ 
+                tenantId: document.tenantId, 
+                actorKind: 'SYSTEM', 
+                entityType: 'DOCUMENT', 
+                entityId: document.id, 
+                action: 'CERTIFICATE_ISSUED'
+            }, transaction);
+
+            // TODO: Adicionar lógica para notificar todas as partes (dono e signatários)
+            // enviando por e-mail o PDF final assinado e o certificado de conclusão.
         }
 
+        // Se todas as operações foram bem-sucedidas, confirma a transação.
         await transaction.commit();
     } catch (error) {
+        // Se qualquer operação falhar, desfaz todas as alterações no banco de dados.
         await transaction.rollback();
+        console.error("Erro durante o commit da assinatura:", error);
+        // Propaga o erro para o controller, que retornará uma resposta 500.
         throw error;
     }
 };
