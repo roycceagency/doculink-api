@@ -9,65 +9,42 @@ const { User, Tenant, Session, sequelize } = require('../../models');
 
 /**
  * Gera um 'slug' seguro para URL a partir de um nome.
- * @param {string} name - O nome a ser convertido.
- * @returns {string}
  */
 const generateSlug = (name) => {
   if (!name) return '';
-  return name
-    .toLowerCase()
-    .trim()
-    .replace(/[^\w\s-]/g, '') // Remove caracteres especiais
-    .replace(/[\s_-]+/g, '-') // Substitui espaços e underscores por hífens
-    .replace(/^-+|-+$/g, ''); // Remove hífens do início e do fim
+  return name.toLowerCase().trim().replace(/[^\w\s-]/g, '').replace(/[\s_-]+/g, '-').replace(/^-+|-+$/g, '');
 };
 
 /**
- * Gera um par de tokens (access e refresh) para um usuário autenticado.
- * @param {User} user - O objeto do usuário do Sequelize.
- * @returns {{accessToken: string, refreshToken: string}}
+ * Gera um par de tokens (access e refresh) para um usuário.
  */
 const generateTokens = (user) => {
-  const accessToken = jwt.sign(
-    { userId: user.id, tenantId: user.tenantId },
-    process.env.JWT_SECRET,
-    { expiresIn: '15m' }
-  );
-
-  const refreshToken = jwt.sign(
-    { userId: user.id },
-    process.env.JWT_REFRESH_SECRET,
-    { expiresIn: '7d' }
-  );
-
+  const accessToken = jwt.sign({ userId: user.id, tenantId: user.tenantId }, process.env.JWT_SECRET, { expiresIn: '15m' });
+  const refreshToken = jwt.sign({ userId: user.id }, process.env.JWT_REFRESH_SECRET, { expiresIn: '7d' });
   return { accessToken, refreshToken };
 };
 
 /**
  * Salva a sessão do refresh token no banco de dados.
- * @param {string} userId - ID do usuário.
- * @param {string} refreshToken - O token de refresh (não o hash).
  */
 const saveSession = async (userId, refreshToken) => {
   const refreshTokenHash = await bcrypt.hash(refreshToken, 10);
-  const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 dias
-
-  await Session.create({
-    userId,
-    refreshTokenHash,
-    expiresAt,
-  });
+  const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+  await Session.create({ userId, refreshTokenHash, expiresAt });
 };
 
 // --- Funções de Serviço Principais (Exportadas) ---
 
 /**
- * Cadastra um novo usuário e um novo Tenant associado.
- * @param {object} userData - Dados do formulário { name, email, password, cpf, phone }.
- * @returns {Promise<{accessToken: string, refreshToken: string, user: object}>}
+ * Cadastra um novo usuário e seu Tenant associado.
  */
 const registerUser = async (userData) => {
   const { name, email, password, cpf, phone } = userData;
+
+  // Validação reforçada para a senha
+  if (!password || typeof password !== 'string' || password.length < 6) {
+    throw new Error('A senha é inválida ou muito curta (mínimo 6 caracteres).');
+  }
 
   const existingUser = await User.findOne({ where: { email } });
   if (existingUser) {
@@ -77,12 +54,10 @@ const registerUser = async (userData) => {
   const transaction = await sequelize.transaction();
   try {
     let slug = generateSlug(`${name}'s Organization`);
-    
     const existingTenant = await Tenant.findOne({ where: { slug }, transaction });
     if (existingTenant) {
       slug = `${slug}-${Math.random().toString(36).substring(2, 7)}`;
     }
-    
     const newTenant = await Tenant.create({ name: `${name}'s Organization`, slug }, { transaction });
 
     const passwordHash = await bcrypt.hash(password, 10);
@@ -103,36 +78,29 @@ const registerUser = async (userData) => {
     
     const userToReturn = newUser.toJSON();
     delete userToReturn.passwordHash;
-
     return { accessToken, refreshToken, user: userToReturn };
   } catch (error) {
     await transaction.rollback();
-    console.error("Erro na transação de registro:", error); 
+    console.error("Erro detalhado no registro:", error);
     if (error.name === 'SequelizeUniqueConstraintError') {
       throw new Error(`Não foi possível criar a conta. O CPF ou e-mail já está em uso.`);
     }
-    throw error;
+    throw new Error('Falha ao criar o usuário no banco de dados.');
   }
 };
 
 /**
- * Autentica um usuário com e-mail e senha, com verificação de segurança.
- * @param {string} email - O e-mail do usuário.
- * @param {string} password - A senha do usuário.
- * @returns {Promise<{accessToken: string, refreshToken: string, user: object}>}
+ * Autentica um usuário com e-mail e senha.
  */
 const loginUser = async (email, password) => {
-  const user = await User.findOne({ where: { email } });
-  
-  // Se o usuário não for encontrado, as credenciais são inválidas.
-  if (!user) {
+  // Validação reforçada para a senha
+  if (!password || typeof password !== 'string') {
     throw new Error('Credenciais inválidas.');
   }
 
-  // CORREÇÃO: Se o usuário foi criado sem senha, não podemos comparar.
-  // Isso protege contra o erro "data and hash arguments required".
-  if (!user.passwordHash) {
-    console.error(`Tentativa de login para o usuário ${email} que não possui hash de senha no banco de dados.`);
+  const user = await User.findOne({ where: { email } });
+  
+  if (!user || !user.passwordHash) {
     throw new Error('Credenciais inválidas.');
   }
 
@@ -146,33 +114,28 @@ const loginUser = async (email, password) => {
 
   const userToReturn = user.toJSON();
   delete userToReturn.passwordHash;
-  
   return { accessToken, refreshToken, user: userToReturn };
 };
 
 /**
  * Processa um refresh token para emitir um novo par de tokens.
- * @param {string} refreshTokenFromRequest - O refresh token enviado pelo cliente.
- * @returns {Promise<{accessToken: string, refreshToken: string}>}
  */
 const handleRefreshToken = async (refreshTokenFromRequest) => {
   try {
     const decoded = jwt.verify(refreshTokenFromRequest, process.env.JWT_REFRESH_SECRET);
     const sessions = await Session.findAll({ where: { userId: decoded.userId } });
-    if (!sessions || sessions.length === 0) {
-      throw new Error('Nenhuma sessão ativa encontrada.');
-    }
+    if (!sessions || sessions.length === 0) throw new Error('Nenhuma sessão ativa encontrada.');
+    
     let sessionRecord = null;
     for (const session of sessions) {
-        const isMatch = await bcrypt.compare(refreshTokenFromRequest, session.refreshTokenHash);
-        if (isMatch) {
+        if (await bcrypt.compare(refreshTokenFromRequest, session.refreshTokenHash)) {
             sessionRecord = session;
             break;
         }
     }
     if (!sessionRecord) throw new Error('Refresh token inválido ou revogado.');
     
-    await sessionRecord.destroy(); // Rotação de token
+    await sessionRecord.destroy();
     const user = await User.findByPk(decoded.userId);
     if (!user) throw new Error('Usuário associado ao token não encontrado.');
 
@@ -185,21 +148,17 @@ const handleRefreshToken = async (refreshTokenFromRequest) => {
 };
 
 /**
- * Realiza o logout invalidando o refresh token específico no banco de dados.
- * @param {string} refreshTokenFromRequest - O refresh token a ser invalidado.
- * @param {User} user - O usuário autenticado.
+ * Realiza o logout invalidando o refresh token.
  */
 const handleLogout = async (refreshTokenFromRequest, user) => {
   const sessions = await Session.findAll({ where: { userId: user.id } });
   for (const session of sessions) {
-      const isMatch = await bcrypt.compare(refreshTokenFromRequest, session.refreshTokenHash);
-      if (isMatch) {
+      if (await bcrypt.compare(refreshTokenFromRequest, session.refreshTokenHash)) {
           await session.destroy();
           return;
       }
   }
 };
-
 
 module.exports = {
   registerUser,
