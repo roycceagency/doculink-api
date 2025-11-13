@@ -24,6 +24,17 @@ module.exports = (sequelize, DataTypes) => {
       type: DataTypes.STRING,
       allowNull: false
     },
+    // --- NOVOS CAMPOS ---
+    isFavorite: {
+      type: DataTypes.BOOLEAN,
+      defaultValue: false,
+      allowNull: false,
+    },
+    status: {
+      type: DataTypes.STRING,
+      defaultValue: 'ACTIVE', // Pode ser 'ACTIVE' ou 'INACTIVE'
+      allowNull: false,
+    },
     email: {
       type: DataTypes.STRING,
       allowNull: false,

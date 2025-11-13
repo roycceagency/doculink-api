@@ -38,7 +38,36 @@ const listContacts = async (user) => {
   return contacts;
 };
 
+const updateContact = async (user, contactId, updateData) => {
+  const contact = await Contact.findOne({ where: { id: contactId, ownerId: user.id } });
+  if (!contact) {
+    throw new Error('Contato não encontrado ou acesso negado.');
+  }
+
+  // Filtra apenas os campos que podem ser atualizados
+  const allowedUpdates = ['name', 'email', 'cpf', 'phone', 'isFavorite', 'status'];
+  const validUpdates = {};
+  for (const key of allowedUpdates) {
+    if (updateData[key] !== undefined) {
+      validUpdates[key] = updateData[key];
+    }
+  }
+
+  await contact.update(validUpdates);
+  return contact;
+};
+
+const deleteContact = async (user, contactId) => {
+    const contact = await Contact.findOne({ where: { id: contactId, ownerId: user.id } });
+    if (!contact) {
+        throw new Error('Contato não encontrado ou acesso negado.');
+    }
+    await contact.destroy();
+};
+
 module.exports = {
   createContact,
   listContacts,
+  updateContact,
+  deleteContact,
 };

@@ -42,7 +42,22 @@ const create = async (req, res, next) => {
   }
 };
 
-module.exports = {
-  list,
-  create,
+const update = async (req, res, next) => {
+  try {
+    const updatedContact = await contactService.updateContact(req.user, req.params.id, req.body);
+    res.status(200).json(updatedContact);
+  } catch (error) {
+    next(error);
+  }
 };
+
+const deleteContact = async (req, res, next) => {
+  try {
+    await contactService.deleteContact(req.user, req.params.id);
+    res.status(204).send(); // 204 No Content para sucesso sem corpo de resposta
+  } catch (error) {
+    next(error);
+  }
+};
+
+module.exports = { list, create, update, delete: deleteContact };

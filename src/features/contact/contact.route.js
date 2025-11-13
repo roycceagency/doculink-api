@@ -35,6 +35,11 @@ router.get('/', contactController.list);
  */
 router.post('/', contactController.create);
 
+// --- NOVAS ROTAS ---
+router.patch('/:id', contactController.update); // Rota para atualizar (editar, favoritar, inativar)
+router.delete('/:id', contactController.delete);   // Rota para deletar
+// -----------------
+
 
 // Exporta o roteador configurado para ser usado no arquivo principal de rotas (src/routes/index.js)
 module.exports = router;
