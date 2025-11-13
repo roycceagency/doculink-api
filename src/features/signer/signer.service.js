@@ -1,11 +1,29 @@
 // src/features/signer/signer.service.js
 
+const fs = require('fs/promises');
+const path = require('path');
 const crypto = require('crypto');
 const bcrypt = require('bcrypt');
 const { Document, Signer, OtpCode, AuditLog, Certificate, User, sequelize } = require('../../models');
 const notificationService = require('../../services/notification.service');
-const { createAuditLog } = require('../document/document.service'); // Reutilizando a função de auditoria
-const documentService = require('../document/document.service'); // <-- IMPORTAR o documentService
+const documentService = require('../document/document.service');
+const { createAuditLog } = require('../document/document.service');
+
+const saveSignatureImage = async (base64Image, tenantId, signerId) => {
+  if (!base64Image) {
+    throw new Error("Imagem da assinatura (Base64) não fornecida.");
+  }
+  const base64Data = base64Image.replace(/^data:image\/png;base64,/, "");
+  const imageBuffer = Buffer.from(base64Data, 'base64');
+  
+  const dir = path.join(__dirname, '..', '..', '..', 'uploads', tenantId, 'signatures');
+  await fs.mkdir(dir, { recursive: true });
+  
+  const filePath = path.join(dir, `${signerId}.png`);
+  await fs.writeFile(filePath, imageBuffer);
+  
+  return path.relative(path.join(__dirname, '..', '..', '..'), filePath);
+};
 
 /**
  * Obtém o resumo do documento para o signatário e registra o evento de visualização.
