@@ -2,7 +2,7 @@
 
 const crypto = require('crypto');
 const bcrypt = require('bcrypt');
-const { Document, Signer, OtpCode, AuditLog, Certificate, sequelize } = require('../../models');
+const { Document, Signer, OtpCode, AuditLog, Certificate, User, sequelize } = require('../../models');
 const notificationService = require('../../services/notification.service');
 const { createAuditLog } = require('../document/document.service'); // Reutilizando a função de auditoria
 const documentService = require('../document/document.service'); // <-- IMPORTAR o documentService
