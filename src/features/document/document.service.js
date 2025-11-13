@@ -347,5 +347,6 @@ module.exports = {
   changeDocumentStatus,
   getDocumentDownloadUrl,
   findAllDocuments,
-  getDocumentStats
+  getDocumentStats,
+  saveSignatureImage
 };
