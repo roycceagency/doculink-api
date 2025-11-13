@@ -149,12 +149,33 @@ const updateDocumentDetails = async (docId, updates, user) => {
  * Obtém o caminho absoluto do arquivo no servidor para permitir o download.
  */
 const getDocumentFilePath = async (docId, user) => {
-    const document = await findDocumentById(docId, user);
-    if (!document.storageKey) throw new Error('Arquivo do documento não encontrado no armazenamento.');
+    const document = await Document.findOne({
+      where: { id: docId, ownerId: user.id } // Garantindo que só o dono possa acessar
+    });
+
+    if (!document || !document.storageKey) {
+      throw new Error('Arquivo do documento não encontrado ou acesso negado.');
+    }
     
     const absolutePath = path.join(__dirname, '..', '..', '..', document.storageKey);
     const originalName = document.title.includes('.') ? document.title : `${document.title}${path.extname(document.storageKey)}`;
     return { filePath: absolutePath, originalName };
+};
+
+const getDocumentDownloadUrl = async (docId, user) => {
+    // Valida o acesso ao documento
+    const document = await Document.findOne({
+        where: { id: docId, ownerId: user.id }
+    });
+    if (!document) {
+        throw new Error('Documento não encontrado ou acesso negado.');
+    }
+    
+    // Constrói uma URL pública para o arquivo.
+    // Isso requer que a pasta 'uploads' seja servida estaticamente pelo Express.
+    const fileUrl = `${process.env.API_BASE_URL}/${document.storageKey}`;
+    
+    return { url: fileUrl };
 };
 
 /**
@@ -264,6 +285,8 @@ const changeDocumentStatus = async (docId, newStatus, user) => {
 };
 
 
+
+
 module.exports = {
   createAuditLog,
   createDocumentAndHandleUpload,
@@ -273,4 +296,5 @@ module.exports = {
   addSignersToDocument,
   findAuditTrail,
   changeDocumentStatus,
+  getDocumentDownloadUrl
 };

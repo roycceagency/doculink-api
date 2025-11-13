@@ -1,6 +1,8 @@
 // src/features/signer/signer.controller.js
 
 const signerService = require('./signer.service');
+const documentService = require('../document/document.service'); // <-- IMPORTAR O document.service
+const { User } = require('../../models'); // <-- IMPORTAR O User
 
 const getSummary = async (req, res, next) => {
   try {
@@ -85,6 +87,26 @@ const savePosition = async (req, res, next) => {
   }
 };
 
+const getDocumentUrl = async (req, res, next) => {
+  try {
+    // req.document é fornecido pelo middleware resolveSignerToken.
+    // Para chamar o serviço de documento, precisamos do "dono" do documento.
+    const owner = await User.findByPk(req.document.ownerId);
+    if (!owner) {
+        throw new Error("Proprietário do documento não encontrado.");
+    }
+
+    // Chama o serviço de documento para gerar a URL.
+    const urlData = await documentService.getDocumentDownloadUrl(req.document.id, owner);
+
+    res.status(200).json(urlData);
+  } catch (error) {
+    next(error);
+  }
+};
+
+
+
 
 module.exports = {
   getSummary,
@@ -93,5 +115,6 @@ module.exports = {
   verifyOtp,
   confirmSignatureArt,
   commitSignature,
-  savePosition
+  savePosition,
+   getDocumentUrl
 };

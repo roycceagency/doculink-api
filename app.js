@@ -22,6 +22,9 @@ app.use(express.json());
 // 5. Configuração das Rotas da API
 app.use('/api', routes);
 
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+
+
 // 6. Middleware para Tratamento de Erros
 app.use((err, req, res, next) => {
   console.error('---------------------------------');

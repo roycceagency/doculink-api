@@ -44,15 +44,15 @@ const updateDocument = async (req, res, next) => {
 const downloadDocumentFile = async (req, res, next) => {
     try {
         const { id } = req.params;
-        const { filePath, originalName } = await documentService.getDocumentFilePath(id, req.user);
         
-        // O método res.download lida com a configuração dos headers e o envio do arquivo.
-        res.download(filePath, originalName, (err) => {
-            if (err) {
-                // Se houver erro no envio, passa para o error handler
-                next(err);
-            }
-        });
+        // --- MUDANÇA AQUI ---
+        // Agora chamamos a função que retorna o objeto { url: '...' }
+        const downloadData = await documentService.getDocumentDownloadUrl(id, req.user);
+        
+        // Retornamos o JSON para o frontend. O frontend que fará o fetch da URL.
+        return res.status(200).json(downloadData);
+        // -------------------
+
     } catch (error) {
         next(error);
     }
