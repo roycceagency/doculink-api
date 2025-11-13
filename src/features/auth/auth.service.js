@@ -41,7 +41,6 @@ const saveSession = async (userId, refreshToken) => {
 const registerUser = async (userData) => {
   const { name, email, password, cpf, phone } = userData;
 
-  // Validação reforçada para a senha
   if (!password || typeof password !== 'string' || password.length < 6) {
     throw new Error('A senha é inválida ou muito curta (mínimo 6 caracteres).');
   }
@@ -51,41 +50,36 @@ const registerUser = async (userData) => {
     throw new Error('Este e-mail já está em uso.');
   }
 
-  const transaction = await sequelize.transaction();
   try {
-    let slug = generateSlug(`${name}'s Organization`);
-    const existingTenant = await Tenant.findOne({ where: { slug }, transaction });
-    if (existingTenant) {
-      slug = `${slug}-${Math.random().toString(36).substring(2, 7)}`;
-    }
-    const newTenant = await Tenant.create({ name: `${name}'s Organization`, slug }, { transaction });
-
     const passwordHash = await bcrypt.hash(password, 10);
+    console.log(`[DEBUG] Gerando hash para o usuário ${email}:`, passwordHash); // <-- LOG DE DEBUG
 
+    // Criação do Tenant primeiro, fora da transação
+    let slug = generateSlug(`${name}'s Organization`);
+    const newTenant = await Tenant.create({ name: `${name}'s Organization`, slug });
+
+    // Agora, a criação do usuário
     const newUser = await User.create({
       name,
       email,
-      passwordHash,
+      passwordHash, // Passando o hash
       cpf,
       phoneWhatsE164: phone,
       tenantId: newTenant.id,
-    }, { transaction });
-
-    await transaction.commit();
+    });
+    
+    console.log('[DEBUG] Objeto newUser criado:', newUser.toJSON()); // <-- LOG DE DEBUG
 
     const { accessToken, refreshToken } = generateTokens(newUser);
     await saveSession(newUser.id, refreshToken);
     
     const userToReturn = newUser.toJSON();
     delete userToReturn.passwordHash;
+
     return { accessToken, refreshToken, user: userToReturn };
   } catch (error) {
-    await transaction.rollback();
-    console.error("Erro detalhado no registro:", error);
-    if (error.name === 'SequelizeUniqueConstraintError') {
-      throw new Error(`Não foi possível criar a conta. O CPF ou e-mail já está em uso.`);
-    }
-    throw new Error('Falha ao criar o usuário no banco de dados.');
+    console.error("ERRO DETALHADO NO REGISTRO:", error);
+    throw error;
   }
 };
 

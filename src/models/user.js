@@ -45,10 +45,9 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.STRING,
         allowNull: false, // Celular agora é obrigatório
     },
-          // --- NOVO CAMPO ---
-    passwordHash: {
+   passwordHash: {
       type: DataTypes.STRING,
-      allowNull: false, // Senha é obrigatória
+      allowNull: false
     },
     },
     cpf: {

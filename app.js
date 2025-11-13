@@ -46,7 +46,7 @@ const path = require('path');
 
       // --- SINCRONIZAÇÃO DOS MODELOS ---
       console.log('Sincronizando modelos com o banco de dados (FORCE TRUE)...');
-      await db.sequelize.sync({ force: false }); // <-- força recriação total das tabelas
+      await db.sequelize.sync({ force: true }); // <-- força recriação total das tabelas
 
       console.warn('------------------------------------------------------------------');
       console.warn('⚠️  Atenção: Banco de dados foi recriado com "force: true".');
