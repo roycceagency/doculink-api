@@ -42,6 +42,7 @@ router.post('/:id/expire', documentController.expireDocument);
 
 
 router.post('/:id/pades', authGuard, documentController.applyPades);
+router.get('/', documentController.getAllDocuments);
 
 
 module.exports = router;

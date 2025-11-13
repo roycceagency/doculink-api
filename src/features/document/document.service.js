@@ -285,7 +285,32 @@ const changeDocumentStatus = async (docId, newStatus, user) => {
 };
 
 
+const findAllDocuments = async (user, status) => {
+    const whereClause = {
+        ownerId: user.id, // Garante que só os documentos do usuário logado sejam retornados
+    };
 
+    if (status) {
+        // Mapeia os status do frontend para os status do backend
+        const statusMap = {
+            pendentes: ['READY', 'PARTIALLY_SIGNED'],
+            concluidos: ['SIGNED'],
+            lixeira: ['CANCELLED'], // Supondo que lixeira = cancelado
+        };
+        
+        if (statusMap[status]) {
+            whereClause.status = { [sequelize.Op.in]: statusMap[status] };
+        }
+    } else {
+        // Se nenhum status for fornecido (ex: aba "Todos"), exclui os da lixeira
+        whereClause.status = { [sequelize.Op.notIn]: ['CANCELLED'] };
+    }
+
+    return Document.findAll({
+        where: whereClause,
+        order: [['createdAt', 'DESC']],
+    });
+};
 
 module.exports = {
   createAuditLog,
@@ -296,5 +321,6 @@ module.exports = {
   addSignersToDocument,
   findAuditTrail,
   changeDocumentStatus,
-  getDocumentDownloadUrl
+  getDocumentDownloadUrl,
+  findAllDocuments
 };

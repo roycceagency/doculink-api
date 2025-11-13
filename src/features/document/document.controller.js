@@ -115,6 +115,16 @@ const applyPades = async (req, res, next) => {
   }
 };
 
+const getAllDocuments = async (req, res, next) => {
+  try {
+    const { status } = req.query; // Pega o status da URL, ex: ?status=SIGNED
+    const documents = await documentService.findAllDocuments(req.user, status);
+    return res.status(200).json(documents);
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   createDocument,
   getDocumentById,
@@ -124,5 +134,6 @@ module.exports = {
   getDocumentAuditTrail,
   cancelDocument,
   expireDocument,
-  applyPades
+  applyPades,
+  getAllDocuments
 };
