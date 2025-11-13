@@ -18,4 +18,15 @@ const updateMe = async (req, res, next) => {
   }
 };
 
-module.exports = { getMe, updateMe };
+const changePassword = async (req, res, next) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+    await userService.changeUserPassword(req.user, currentPassword, newPassword);
+    res.status(200).json({ message: 'Senha atualizada com sucesso.' });
+  } catch (error) {
+    // Passa o erro para o middleware, que pode retornar 400 ou 403
+    next(error);
+  }
+};
+
+module.exports = { getMe, updateMe, changePassword};

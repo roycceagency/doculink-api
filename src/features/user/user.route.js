@@ -10,4 +10,9 @@ router.use(authGuard);
 router.get('/me', userController.getMe);
 router.patch('/me', userController.updateMe);
 
+// --- NOVA ROTA ---
+router.patch('/me/change-password', userController.changePassword);
+// 
+
+
 module.exports = router;
