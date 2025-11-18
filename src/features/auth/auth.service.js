@@ -1,214 +1,287 @@
-// src/features/user/user.service.js
+// src/features/auth/auth.service.js
 'use strict';
 
-const { User } = require('../../models');
 const bcrypt = require('bcrypt');
-const auditService = require('../audit/audit.service');
+const jwt = require('jsonwebtoken');
+const { User, Tenant, Session, sequelize } = require('../../models');
+const auditService = require('../audit/audit.service'); // Importação do Serviço de Auditoria
+
+// --- FUNÇÕES AUXILIARES INTERNAS ---
 
 /**
- * Atualiza os dados de perfil do próprio usuário logado (apenas campos permitidos).
- * @param {string} userId - O ID do usuário a ser atualizado.
- * @param {object} updateData - Os dados a serem atualizados (ex: { name, phoneWhatsE164 }).
- * @returns {Promise<User>} - A instância do usuário atualizado.
+ * Gera um 'slug' seguro para URL a partir de um nome.
+ * @param {string} name - O nome a ser convertido.
+ * @returns {string}
  */
-const updateUser = async (userId, updateData) => {
-  const user = await User.findByPk(userId);
-  if (!user) {
-    throw new Error('Usuário não encontrado.');
-  }
-
-  // Define uma lista de campos que o usuário tem permissão para atualizar nesta rota.
-  const allowedUpdates = ['name', 'phoneWhatsE164'];
-  const validUpdates = {};
-
-  for (const key of allowedUpdates) {
-    if (updateData[key] !== undefined) {
-      validUpdates[key] = updateData[key];
-    }
-  }
-
-  await user.update(validUpdates);
-  return user;
+const generateSlug = (name) => {
+  if (!name) return '';
+  return name
+    .toLowerCase()
+    .trim()
+    .replace(/[^\w\s-]/g, '')
+    .replace(/[\s_-]+/g, '-')
+    .replace(/^-+|-+$/g, '');
 };
 
 /**
- * Altera a senha do próprio usuário após validar sua senha atual.
- * @param {User} user - O objeto do usuário autenticado (do authGuard).
- * @param {string} currentPassword - A senha atual enviada pelo usuário para verificação.
- * @param {string} newPassword - A nova senha a ser definida.
+ * Gera um par de tokens (access e refresh) para um usuário autenticado.
+ * @param {User} user - O objeto do usuário do Sequelize.
+ * @returns {{accessToken: string, refreshToken: string}}
  */
-const changeUserPassword = async (user, currentPassword, newPassword) => {
-  // Usa o escopo 'withPassword' para buscar o hash da senha, que é oculto por padrão
-  const userWithPassword = await User.scope('withPassword').findByPk(user.id);
-  
-  if (!userWithPassword || !userWithPassword.passwordHash) {
-    throw new Error('Conta configurada incorretamente ou usuário não encontrado.');
-  }
+const generateTokens = (user) => {
+  const accessToken = jwt.sign(
+    { userId: user.id, tenantId: user.tenantId },
+    process.env.JWT_SECRET,
+    { expiresIn: '15m' }
+  );
 
-  // Compara a senha atual enviada com o hash salvo no banco.
-  const isMatch = await bcrypt.compare(currentPassword, userWithPassword.passwordHash);
-  if (!isMatch) {
-    const error = new Error('A senha atual está incorreta.');
-    error.statusCode = 403;
-    throw error;
-  }
-  
-  // Valida a nova senha.
-  if (!newPassword || newPassword.length < 6) {
-    const error = new Error('A nova senha deve ter no mínimo 6 caracteres.');
-    error.statusCode = 400;
-    throw error;
-  }
-  
-  // Criptografa e salva a nova senha no banco.
-  userWithPassword.passwordHash = await bcrypt.hash(newPassword, 10);
-  await userWithPassword.save();
+  const refreshToken = jwt.sign(
+    { userId: user.id },
+    process.env.JWT_REFRESH_SECRET,
+    { expiresIn: '7d' }
+  );
 
-  // Log de Auditoria (Opcional para troca de senha própria)
-  await auditService.createEntry({
-    tenantId: user.tenantId,
-    actorKind: 'USER',
-    actorId: user.id,
-    entityType: 'USER',
-    entityId: user.id,
-    action: 'PASSWORD_CHANGED',
-    ip: 'SYSTEM', // Idealmente repassado do controller
-    userAgent: 'SYSTEM'
+  return { accessToken, refreshToken };
+};
+
+/**
+ * Salva a sessão do refresh token no banco de dados.
+ * @param {string} userId - ID do usuário.
+ * @param {string} refreshToken - O token de refresh.
+ */
+const saveSession = async (userId, refreshToken) => {
+  const refreshTokenHash = await bcrypt.hash(refreshToken, 10);
+  const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 dias
+
+  await Session.create({
+    userId,
+    refreshTokenHash,
+    expiresAt,
   });
 };
 
-// --- FUNÇÕES ADMINISTRATIVAS (Acesso via AdminGuard) ---
+
+// --- FUNÇÕES DE SERVIÇO PRINCIPAIS (EXPORTADAS) ---
 
 /**
- * Lista todos os usuários do Tenant (Apenas para Admin).
+ * Cadastra um novo usuário e seu tenant.
+ * @param {object} userData - Dados do usuário (name, email, password, etc).
+ * @param {object} context - Dados de contexto { ip, userAgent }.
  */
-const listUsersByTenant = async (tenantId) => {
-  return User.findAll({
-    where: { tenantId },
-    attributes: ['id', 'name', 'email', 'role', 'status', 'createdAt', 'phoneWhatsE164'], // Exclui passwordHash
-    order: [['name', 'ASC']]
-  });
-};
+const registerUser = async (userData, { ip, userAgent } = {}) => {
+  const { name, email, password, cpf, phone } = userData;
 
-/**
- * Cria um novo usuário dentro do Tenant (Convidado pelo Admin).
- */
-const createUserByAdmin = async (adminUser, userData) => {
-  const { name, email, password, role, cpf, phone } = userData;
-
-  if (!email || !password || !name) {
-    throw new Error('Nome, e-mail e senha são obrigatórios.');
+  if (!password || typeof password !== 'string' || password.length < 6) {
+    throw new Error('A senha é inválida ou muito curta (mínimo 6 caracteres).');
   }
 
-  const existing = await User.findOne({ where: { email } });
-  if (existing) throw new Error('E-mail já está em uso.');
+  const existingUser = await User.scope('withPassword').findOne({ where: { email } });
+  if (existingUser) {
+    throw new Error('Este e-mail já está em uso.');
+  }
 
   const passwordHash = await bcrypt.hash(password, 10);
+  
+  if (!passwordHash) {
+      throw new Error("Falha crítica ao gerar o hash da senha.");
+  }
 
-  const newUser = await User.create({
-    tenantId: adminUser.tenantId, // Força o mesmo tenant do admin
-    name,
-    email,
-    passwordHash,
-    role: role || 'USER',
-    cpf,
-    phoneWhatsE164: phone,
-    status: 'ACTIVE'
-  });
+  const transaction = await sequelize.transaction();
+  try {
+    let slug = generateSlug(`${name}'s Organization`);
+    
+    // Cria a organização (Tenant)
+    const newTenant = await Tenant.create({ 
+        name: `${name}'s Organization`, 
+        slug 
+    }, { transaction });
 
-  // Log de Auditoria
-  await auditService.createEntry({
-    tenantId: adminUser.tenantId,
-    actorKind: 'USER',
-    actorId: adminUser.id,
-    entityType: 'USER',
-    entityId: newUser.id,
-    action: 'USER_CREATED',
-    ip: 'SYSTEM',
-    userAgent: 'SYSTEM',
-    payload: { email: newUser.email, role: newUser.role }
-  });
+    const newUserPayload = {
+      name,
+      email,
+      passwordHash,
+      cpf,
+      phoneWhatsE164: phone,
+      tenantId: newTenant.id,
+    };
+    
+    // Cria o usuário
+    const newUser = await User.create(newUserPayload, { transaction });
+    
+    // Recarrega o usuário para garantir integridade
+    const createdUserWithPassword = await User.scope('withPassword').findByPk(newUser.id, { transaction });
 
-  const userJson = newUser.toJSON();
-  delete userJson.passwordHash;
-  return userJson;
+    if (!createdUserWithPassword || !createdUserWithPassword.passwordHash) {
+      throw new Error("Falha ao salvar a senha do usuário durante o registro.");
+    }
+
+    // --- AUDIT LOG: CRIAÇÃO DE USUÁRIO ---
+    // Como o usuário acabou de ser criado, ele é o ator e a entidade
+    await auditService.createEntry({
+        tenantId: newTenant.id,
+        actorKind: 'USER',
+        actorId: newUser.id,
+        entityType: 'USER',
+        entityId: newUser.id,
+        action: 'USER_CREATED',
+        ip: ip || '0.0.0.0',
+        userAgent: userAgent || 'System',
+        payload: { email, tenantName: newTenant.name }
+    }, transaction);
+    // -------------------------------------
+
+    await transaction.commit();
+
+    const { accessToken, refreshToken } = generateTokens(createdUserWithPassword);
+    await saveSession(createdUserWithPassword.id, refreshToken);
+    
+    const userToReturn = createdUserWithPassword.toJSON();
+    delete userToReturn.passwordHash;
+
+    return { accessToken, refreshToken, user: userToReturn };
+  } catch (error) {
+    await transaction.rollback();
+    console.error("ERRO NO REGISTRO:", error);
+    if (error.name === 'SequelizeUniqueConstraintError') {
+      throw new Error('Não foi possível criar a conta. O CPF ou e-mail já está em uso.');
+    }
+    throw error;
+  }
 };
 
 /**
- * Atualiza ou Bloqueia um usuário (Ação de Admin).
- * Permite alterar role, status, nome e até resetar a senha.
+ * Autentica um usuário com e-mail e senha.
+ * @param {string} email 
+ * @param {string} password 
+ * @param {object} context - Objeto contendo { ip, userAgent } vindo do controller.
  */
-const updateUserByAdmin = async (adminUser, targetUserId, updates) => {
-  const user = await User.findOne({ where: { id: targetUserId, tenantId: adminUser.tenantId } });
-  
-  if (!user) throw new Error('Usuário não encontrado.');
-
-  // Apenas campos permitidos
-  if (updates.name) user.name = updates.name;
-  if (updates.role) user.role = updates.role;
-  if (updates.status) user.status = updates.status;
-  if (updates.phone) user.phoneWhatsE164 = updates.phone;
-  
-  // Se o admin enviou uma nova senha, reseta a senha do usuário
-  if (updates.password && updates.password.length >= 6) {
-      user.passwordHash = await bcrypt.hash(updates.password, 10);
+const loginUser = async (email, password, { ip, userAgent }) => {
+  if (!password || typeof password !== 'string') {
+    throw new Error('Credenciais inválidas.');
   }
 
-  await user.save();
+  const user = await User.scope('withPassword').findOne({ where: { email } });
+  
+  // Validações de segurança (Timing attack resistant logic seria ideal, mas simples aqui)
+  if (!user || !user.passwordHash) {
+    // Opcional: Poderíamos logar LOGIN_FAILED aqui, mas precisamos do tenantId do usuário que tentou logar (se existisse)
+    throw new Error('Credenciais inválidas.'); 
+  }
 
-  await auditService.createEntry({
-    tenantId: adminUser.tenantId,
-    actorKind: 'USER',
-    actorId: adminUser.id,
-    entityType: 'USER',
-    entityId: user.id,
-    action: 'USER_UPDATED',
-    ip: 'SYSTEM',
-    userAgent: 'SYSTEM',
-    payload: { updates: Object.keys(updates) }
-  });
+  const isPasswordValid = await bcrypt.compare(password, user.passwordHash);
+  
+  if (!isPasswordValid) {
+    // Log de falha poderia ser inserido aqui se desejado, cuidado com DoS de logs
+    throw new Error('Credenciais inválidas.');
+  }
+  
+  const { accessToken, refreshToken } = generateTokens(user);
+  await saveSession(user.id, refreshToken);
 
-  // Retorna o usuário sem o hash da senha
-  const userJson = user.toJSON();
-  delete userJson.passwordHash;
-  return userJson;
+  // --- AUDIT LOG: LOGIN SUCESSO ---
+  try {
+    await auditService.createEntry({
+      tenantId: user.tenantId,
+      actorKind: 'USER',
+      actorId: user.id,
+      entityType: 'USER', // A entidade afetada é a sessão do usuário
+      entityId: user.id,
+      action: 'LOGIN_SUCCESS',
+      ip,
+      userAgent,
+      payload: { email }
+    });
+  } catch (logError) {
+    console.error("Falha ao registrar log de login:", logError);
+    // Não impedimos o login se o log falhar, mas registramos o erro no console
+  }
+  // --------------------------------
+
+  const userToReturn = user.toJSON();
+  delete userToReturn.passwordHash;
+  
+  return { accessToken, refreshToken, user: userToReturn };
 };
 
 /**
- * Remove um usuário permanentemente.
+ * Processa um refresh token para emitir um novo par de tokens.
  */
-const deleteUserByAdmin = async (adminUser, targetUserId) => {
-  if (adminUser.id === targetUserId) {
-    throw new Error('Você não pode excluir a si mesmo.');
+const handleRefreshToken = async (refreshTokenFromRequest) => {
+  try {
+    const decoded = jwt.verify(refreshTokenFromRequest, process.env.JWT_REFRESH_SECRET);
+    const sessions = await Session.findAll({ where: { userId: decoded.userId } });
+    
+    if (!sessions || sessions.length === 0) throw new Error('Nenhuma sessão ativa encontrada.');
+    
+    let sessionRecord = null;
+    for (const session of sessions) {
+        const isMatch = await bcrypt.compare(refreshTokenFromRequest, session.refreshTokenHash);
+        if (isMatch) {
+            sessionRecord = session;
+            break;
+        }
+    }
+
+    if (!sessionRecord) throw new Error('Refresh token inválido ou revogado.');
+    
+    // Remove a sessão antiga (rotação de refresh token)
+    await sessionRecord.destroy();
+    
+    const user = await User.findByPk(decoded.userId);
+    if (!user) throw new Error('Usuário associado ao token não encontrado.');
+
+    const { accessToken, refreshToken: newRefreshToken } = generateTokens(user);
+    await saveSession(user.id, newRefreshToken);
+    
+    return { accessToken, refreshToken: newRefreshToken };
+  } catch (error) {
+    throw new Error('Acesso negado. Sessão inválida.');
+  }
+};
+
+/**
+ * Realiza o logout invalidando o refresh token e registrando log.
+ * @param {string} refreshTokenFromRequest 
+ * @param {User} user - Usuário autenticado
+ * @param {object} context - { ip, userAgent }
+ */
+const handleLogout = async (refreshTokenFromRequest, user, { ip, userAgent } = {}) => {
+  const sessions = await Session.findAll({ where: { userId: user.id } });
+  
+  let sessionFound = false;
+
+  for (const session of sessions) {
+      const isMatch = await bcrypt.compare(refreshTokenFromRequest, session.refreshTokenHash);
+      if (isMatch) {
+          await session.destroy();
+          sessionFound = true;
+          break;
+      }
   }
 
-  const user = await User.findOne({ where: { id: targetUserId, tenantId: adminUser.tenantId } });
-  if (!user) throw new Error('Usuário não encontrado.');
-
-  // Salva dados para o log antes de deletar
-  const userEmail = user.email;
-  const userId = user.id;
-
-  await user.destroy();
-
-  await auditService.createEntry({
-    tenantId: adminUser.tenantId,
-    actorKind: 'USER',
-    actorId: adminUser.id,
-    entityType: 'USER',
-    entityId: userId, // ID que foi removido
-    action: 'USER_DELETED', // Ação no formatter pode ser mapeada para "Usuário removido"
-    ip: 'SYSTEM',
-    userAgent: 'SYSTEM',
-    payload: { email: userEmail }
-  });
+  if (sessionFound) {
+      // --- AUDIT LOG: LOGOUT ---
+      try {
+        await auditService.createEntry({
+            tenantId: user.tenantId,
+            actorKind: 'USER',
+            actorId: user.id,
+            entityType: 'USER',
+            entityId: user.id,
+            action: 'LOGOUT',
+            ip,
+            userAgent
+        });
+      } catch (error) {
+          console.error("Erro ao registrar log de logout:", error);
+      }
+      // -------------------------
+  }
 };
 
 module.exports = {
-  updateUser,
-  changeUserPassword,
-  listUsersByTenant,
-  createUserByAdmin,
-  updateUserByAdmin,
-  deleteUserByAdmin
+  registerUser,
+  loginUser,
+  handleRefreshToken,
+  handleLogout,
 };
