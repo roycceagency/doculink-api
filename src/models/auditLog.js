@@ -21,17 +21,18 @@ module.exports = (sequelize, DataTypes) => {
       references: { model: 'Tenants', key: 'id' }
     },
     actorKind: DataTypes.ENUM('USER', 'SIGNER', 'SYSTEM'),
-    actorId: DataTypes.UUID, // Polimórfico, pode ser de User ou Signer
+    actorId: DataTypes.UUID, 
     
-    // --- CORREÇÃO APLICADA AQUI ---
-    entityType: DataTypes.ENUM('DOCUMENT', 'SIGNER', 'TOKEN', 'OTP', 'STORAGE', 'SYSTEM'), // <-- ADICIONADO AQUI
+    // --- CORREÇÃO AQUI ---
+    // Adicionado 'USER' e 'TENANT' à lista de tipos de entidade permitidos
+    entityType: DataTypes.ENUM('DOCUMENT', 'SIGNER', 'TOKEN', 'OTP', 'STORAGE', 'SYSTEM', 'USER', 'TENANT'),
     
-    entityId: DataTypes.UUID, // ID da entidade afetada
+    entityId: DataTypes.UUID, 
     action: DataTypes.ENUM(
       'CREATED', 'INVITED', 'VIEWED', 'OTP_SENT', 'OTP_VERIFIED',
       'SIGNED', 'EMAILED', 'DOWNLOADED', 'EXPIRED', 'CANCELLED',
       'STATUS_CHANGED', 'STORAGE_UPLOADED', 'PADES_SIGNED', 'CERTIFICATE_ISSUED', 'OTP_FAILED',
-      'LOGIN_SUCCESS', 'LOGOUT', 'USER_CREATED', 'SETTINGS_CHANGED' // <-- Adicionei ações que faltavam também
+      'LOGIN_SUCCESS', 'LOGIN_FAILED', 'LOGOUT', 'USER_CREATED', 'SETTINGS_CHANGED', 'ACCOUNT_LOCKED', 'USER_DELETED'
     ),
     ip: DataTypes.STRING,
     userAgent: DataTypes.TEXT,
