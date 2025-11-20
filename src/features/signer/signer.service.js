@@ -2,6 +2,7 @@
 'use strict';
 
 const fs = require('fs/promises');
+const fsSync = require('fs'); // Usado para verificações síncronas rápidas de existência
 const path = require('path');
 const crypto = require('crypto');
 const bcrypt = require('bcrypt');
@@ -13,45 +14,46 @@ const { Document, Signer, OtpCode, AuditLog, Certificate, User, sequelize } = re
 const notificationService = require('../../services/notification.service');
 const documentService = require('../document/document.service');
 const pdfService = require('../../services/pdf.service');
-const auditService = require('../audit/audit.service'); // Serviço correto para logs
+const auditService = require('../audit/audit.service');
 
 /**
  * Salva a imagem da assinatura (em Base64) como um arquivo PNG no disco.
- * @param {string} base64Image - String base64 da imagem.
- * @param {string} tenantId - ID do tenant.
- * @param {string} signerId - ID do signatário.
+ * Retorna o caminho relativo para armazenamento no banco.
  */
 const saveSignatureImage = async (base64Image, tenantId, signerId) => {
   if (!base64Image) {
     throw new Error("Imagem da assinatura (Base64) não fornecida.");
   }
-  // Remove o cabeçalho do base64 se existir
+  
+  // Define o diretório de upload absoluto usando a raiz do projeto
+  const uploadDir = path.join(process.cwd(), 'uploads', tenantId, 'signatures');
+  
+  // Garante que o diretório existe
+  await fs.mkdir(uploadDir, { recursive: true });
+  
+  // Limpa o cabeçalho do base64 e cria o buffer
   const base64Data = base64Image.replace(/^data:image\/png;base64,/, "");
   const imageBuffer = Buffer.from(base64Data, 'base64');
   
-  // Define o diretório de upload
-  const dir = path.join(__dirname, '..', '..', '..', 'uploads', tenantId, 'signatures');
-  await fs.mkdir(dir, { recursive: true });
+  const fileName = `${signerId}.png`;
+  const filePath = path.join(uploadDir, fileName);
   
-  // Define o caminho do arquivo
-  const filePath = path.join(dir, `${signerId}.png`);
   await fs.writeFile(filePath, imageBuffer);
   
-  // Retorna o caminho relativo para salvar no banco
-  return path.relative(path.join(__dirname, '..', '..', '..'), filePath);
+  // Retorna o caminho RELATIVO (padrão POSIX para compatibilidade)
+  // ex: uploads/tenant-id/signatures/xyz.png
+  return path.join('uploads', tenantId, 'signatures', fileName);
 };
 
 /**
- * Obtém o resumo do documento para o signatário, incluindo a URL para visualização.
- * Registra o evento de visualização (VIEWED) na auditoria.
+ * Obtém o resumo do documento para o signatário (Visualização do Link).
  */
 const getSignerSummary = async (document, signer, req) => {
-  // Se for a primeira vez que o signatário acessa, marca como visualizado
+  // Se for a primeira visualização, atualiza status e loga
   if (signer.status === 'PENDING') {
     signer.status = 'VIEWED';
     await signer.save();
     
-    // Log de Auditoria: VIEWED
     await auditService.createEntry({
       tenantId: document.tenantId,
       actorKind: 'SIGNER',
@@ -65,11 +67,9 @@ const getSignerSummary = async (document, signer, req) => {
   }
 
   const owner = await User.findByPk(document.ownerId);
-  if (!owner) {
-    throw new Error("Proprietário do documento não encontrado.");
-  }
+  if (!owner) throw new Error("Proprietário do documento não encontrado.");
   
-  // Gera URL temporária ou pública para leitura
+  // Gera URL segura para visualização do PDF
   const { url: documentUrl } = await documentService.getDocumentDownloadUrl(document.id, owner);
   
   return {
@@ -90,7 +90,7 @@ const getSignerSummary = async (document, signer, req) => {
 };
 
 /**
- * Atualiza os dados de identificação do signatário (CPF e telefone).
+ * Atualiza dados cadastrais do signatário (CPF/Fone).
  */
 const identifySigner = async (signer, { cpf, phone }) => {
   if (cpf) signer.cpf = cpf;
@@ -99,13 +99,12 @@ const identifySigner = async (signer, { cpf, phone }) => {
 };
 
 /**
- * Inicia o processo de verificação por OTP (One-Time Password).
- * Envia o código para Email e WhatsApp.
+ * Envia o código OTP (One-Time Password).
  */
 const startOtpVerification = async (signer, req) => {
   const otp = crypto.randomInt(100000, 999999).toString();
   const codeHash = await bcrypt.hash(otp, 10);
-  const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // Expira em 10 minutos
+  const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutos
 
   const channels = signer.authChannels || ['EMAIL'];
 
@@ -113,7 +112,7 @@ const startOtpVerification = async (signer, req) => {
     const recipient = channel === 'EMAIL' ? signer.email : signer.phoneWhatsE164;
     if (!recipient) continue;
 
-    // Salva o hash do OTP no banco
+    // Salva hash no banco
     await OtpCode.create({ 
         recipient, 
         channel, 
@@ -122,15 +121,16 @@ const startOtpVerification = async (signer, req) => {
         context: 'SIGNING' 
     });
     
-    // Envia o OTP via notificação
-    await notificationService.sendOtp(recipient, channel, otp, req.document.tenantId);
+    // Envia via provedor (Z-API / Resend)
+    // Não usamos await para não bloquear a resposta da API se o envio demorar
+    notificationService.sendOtp(recipient, channel, otp, req.document.tenantId).catch(console.error);
     
-    // Log de Auditoria: OTP_SENT
+    // Log de Auditoria
     await auditService.createEntry({
         tenantId: req.document.tenantId,
         actorKind: 'SYSTEM',
         entityType: 'OTP',
-        entityId: signer.id, // Vincula ao signatário
+        entityId: signer.id,
         action: 'OTP_SENT',
         ip: req.ip,
         userAgent: req.headers['user-agent'],
@@ -140,20 +140,18 @@ const startOtpVerification = async (signer, req) => {
 };
 
 /**
- * Verifica o código OTP fornecido pelo usuário.
+ * Valida o código OTP inserido.
  */
 const verifyOtp = async (signer, otp, req) => {
     const recipients = [signer.email, signer.phoneWhatsE164].filter(Boolean);
     
-    // Busca o OTP mais recente válido
     const otpRecord = await OtpCode.findOne({
       where: { recipient: recipients, context: 'SIGNING' },
       order: [['createdAt', 'DESC']]
     });
 
-    // Validação: Existe e não expirou?
+    // Valida Existência e Expiração
     if (!otpRecord || new Date() > new Date(otpRecord.expiresAt)) {
-        // Log de Falha
         await auditService.createEntry({
              tenantId: req.document.tenantId, 
              actorKind: 'SIGNER', 
@@ -168,10 +166,9 @@ const verifyOtp = async (signer, otp, req) => {
         throw new Error('Código OTP inválido ou expirado.');
     }
 
-    // Validação: Hash bate?
+    // Valida Hash
     const isMatch = await bcrypt.compare(otp, otpRecord.codeHash);
     if (!isMatch) {
-         // Log de Falha
          await auditService.createEntry({
              tenantId: req.document.tenantId, 
              actorKind: 'SIGNER', 
@@ -186,7 +183,7 @@ const verifyOtp = async (signer, otp, req) => {
         throw new Error('Código OTP inválido.');
     }
 
-    // Log de Sucesso
+    // Sucesso
     await auditService.createEntry({ 
         tenantId: req.document.tenantId, 
         actorKind: 'SIGNER', 
@@ -198,12 +195,12 @@ const verifyOtp = async (signer, otp, req) => {
         userAgent: req.headers['user-agent']
     });
     
-    // Remove o OTP usado para evitar replay
+    // Queima o token
     await otpRecord.destroy();
 };
 
 /**
- * Salva a posição (x, y, página) da assinatura visual definida pelo signatário.
+ * Salva metadados de posição da assinatura visual.
  */
 const saveSignaturePosition = async (signer, position) => {
   signer.signaturePositionX = position.x;
@@ -213,8 +210,7 @@ const saveSignaturePosition = async (signer, position) => {
 };
 
 /**
- * Finaliza o processo de assinatura.
- * Gera hash, salva imagem, cria logs e, se for o último, gera o PDF final.
+ * Efetiva a assinatura, gera PDF final se todos assinaram e emite certificados.
  */
 const commitSignature = async (document, signer, clientFingerprint, signatureImageBase64, req) => {
     const transaction = await sequelize.transaction();
@@ -223,19 +219,18 @@ const commitSignature = async (document, signer, clientFingerprint, signatureIma
     try {
         const timestampISO = new Date().toISOString();
         
-        // 1. Gera o Hash SHA256 da Assinatura (Prova técnica de integridade)
-        // Combina: Hash do Doc Original + ID do Signatário + Hora + Fingerprint do Navegador
+        // 1. Gera o Hash SHA256 da Assinatura (Integridade)
         const signatureHash = crypto.createHash('sha256')
             .update(document.sha256 + signer.id + timestampISO + clientFingerprint)
             .digest('hex');
         
-        // 2. Gera um Código Curto para exibição (Protocolo visual)
+        // 2. Gera Código Curto de Verificação
         const shortCode = signatureHash.substring(0, 6).toUpperCase();
 
-        // 3. Salva a imagem da assinatura no disco
+        // 3. Salva Imagem da Assinatura
         const artefactPath = await saveSignatureImage(signatureImageBase64, document.tenantId, signer.id);
 
-        // 4. Atualiza o Signatário
+        // 4. Atualiza Signatário
         signer.status = 'SIGNED';
         signer.signedAt = new Date();
         signer.signatureHash = signatureHash;
@@ -252,33 +247,46 @@ const commitSignature = async (document, signer, clientFingerprint, signatureIma
             action: 'SIGNED',
             ip: req.ip,
             userAgent: req.headers['user-agent'],
-            payload: { signatureHash, artefactPath, shortCode, clientFingerprint }
+            payload: { signatureHash, artefactPath, shortCode }
         }, transaction);
 
-        // 6. Verifica se TODOS os signatários já assinaram
+        // 6. Verifica status global do documento
         const signersInDoc = await Signer.findAll({ where: { documentId: document.id }, transaction });
         const allSigned = signersInDoc.every(s => s.status === 'SIGNED');
 
         if (allSigned) {
-            console.log(`[FINALIZE] Documento ${document.id} finalizado. Gerando PDF final...`);
+            console.log(`[FINALIZE] Documento ${document.id} completo. Iniciando geração do PDF final...`);
             
-            // 6a. Gera o PDF Final com as imagens das assinaturas embutidas
-            const originalFilePath = path.join(__dirname, '..', '..', '..', document.storageKey);
+            // --- CORREÇÃO DE CAMINHO ABSOLUTO ---
+            const originalFilePath = path.join(process.cwd(), document.storageKey);
             
-            // Usa o pdfService para carimbar o PDF
+            if (!fsSync.existsSync(originalFilePath)) {
+                console.error(`[ERRO CRÍTICO] Arquivo não encontrado: ${originalFilePath}`);
+                throw new Error("Arquivo original do documento não encontrado no servidor.");
+            }
+
+            // --- PREPARAÇÃO DE CAMINHOS PARA O PDF SERVICE ---
+            // O pdfService precisa de caminhos absolutos para ler as imagens das assinaturas.
+            // Como salvamos caminhos relativos no banco, precisamos convertê-los temporariamente.
+            for (const s of signersInDoc) {
+                if (s.signatureArtefactPath && !path.isAbsolute(s.signatureArtefactPath)) {
+                    s.signatureArtefactPath = path.join(process.cwd(), s.signatureArtefactPath);
+                }
+            }
+
+            // 6a. Embute assinaturas visuais
             const signedPdfBuffer = await pdfService.embedSignatures(originalFilePath, signersInDoc);
             
-            // Define caminho do novo arquivo
+            // 6b. Salva novo PDF
             const signedFileStorageKey = document.storageKey.replace(/(\.[\w\d_-]+)$/i, '-signed$1');
-            const signedFilePath = path.join(__dirname, '..', '..', '..', signedFileStorageKey);
+            const signedFilePath = path.join(process.cwd(), signedFileStorageKey);
             await fs.writeFile(signedFilePath, signedPdfBuffer);
 
-            // 6b. Calcula novo Hash do documento final
+            // 6c. Calcula novo Hash e Atualiza Documento
             const newSha256 = crypto.createHash('sha256').update(signedPdfBuffer).digest('hex');
             
-            // 6c. Atualiza status do Documento
             document.status = 'SIGNED';
-            document.storageKey = signedFileStorageKey;
+            document.storageKey = signedFileStorageKey; // Agora aponta para o PDF assinado
             document.sha256 = newSha256;
             await document.save({ transaction });
 
@@ -291,13 +299,11 @@ const commitSignature = async (document, signer, clientFingerprint, signatureIma
                 payload: { newStatus: 'SIGNED', newSha256 }
             }, transaction);
 
-            // 6d. Gera Registro de Certificado (Mock de conteúdo por enquanto)
-            // Futuramente: Gerar um PDF real de "Manifesto de Assinaturas"
+            // 6d. Emite Certificado de Conclusão
             const certificateSha256 = crypto.createHash('sha256').update(`CERT-${document.id}-${timestampISO}`).digest('hex');
-            
             await Certificate.create({
                 documentId: document.id,
-                storageKey: `certificates/${document.id}.pdf`, 
+                storageKey: `certificates/${document.id}.pdf`, // Mock do caminho
                 sha256: certificateSha256,
                 issuedAt: new Date()
             }, { transaction });
@@ -310,33 +316,41 @@ const commitSignature = async (document, signer, clientFingerprint, signatureIma
                 action: 'CERTIFICATE_ISSUED'
             }, transaction);
 
-            // 6e. Dispara E-mails de Conclusão (Fora da transação idealmente, mas aqui para simplificar)
-            // Envia para o Dono
+            // 6e. Envia E-mails de Conclusão
             const owner = await User.findByPk(document.ownerId, { transaction });
+            
+            // Dispara e-mail para o dono (Assíncrono, sem await para não travar)
             if (owner) {
-                // Não usamos await para não bloquear o response se o email demorar
                 notificationService.sendEmail(document.tenantId, {
                     to: owner.email,
                     subject: `Documento Finalizado: ${document.title}`,
-                    html: `<p>O documento <strong>${document.title}</strong> foi assinado por todos.</p><p>Acesse o painel para baixar o arquivo assinado e o certificado.</p>`
-                }).catch(console.error);
+                    html: `
+                        <h3>Processo Concluído</h3>
+                        <p>O documento <strong>${document.title}</strong> foi assinado por todas as partes.</p>
+                        <p>Acesse a plataforma para baixar a versão final e o certificado de auditoria.</p>
+                    `
+                }).catch(err => console.error("Erro ao notificar dono:", err.message));
             }
             
-            // Envia para os Signatários
+            // Dispara e-mail para os signatários
             signersInDoc.forEach(s => {
                  if (s.email) {
                     notificationService.sendEmail(document.tenantId, {
                         to: s.email,
-                        subject: `Cópia do Documento: ${document.title}`,
-                        html: `<p>Olá ${s.name}, o processo de assinatura foi concluído. Em breve você receberá sua cópia.</p>`
-                    }).catch(console.error);
+                        subject: `Cópia do Documento Assinado: ${document.title}`,
+                        html: `
+                            <h3>Olá, ${s.name}</h3>
+                            <p>O processo de assinatura do documento <strong>${document.title}</strong> foi concluído.</p>
+                            <p>Você pode solicitar uma cópia do documento assinado entrando em contato com o remetente.</p>
+                        `
+                    }).catch(err => console.error(`Erro ao notificar signatário ${s.email}:`, err.message));
                  }
             });
         }
 
         await transaction.commit();
 
-        // Retorna dados para o Frontend exibir na tela de sucesso
+        // Dados para retorno ao Frontend
         resultData = {
             shortCode,
             signatureHash,
@@ -346,6 +360,7 @@ const commitSignature = async (document, signer, clientFingerprint, signatureIma
     } catch (error) {
         await transaction.rollback();
         console.error("Erro commitSignature:", error);
+        // Relança o erro para o controller enviar 500/400
         throw error;
     }
 
