@@ -23,18 +23,20 @@ module.exports = (sequelize, DataTypes) => {
     },
     userId: {
       type: DataTypes.UUID,
-      allowNull: true, // Pode ser null se o usuário ainda não se cadastrou (convite pendente pelo email)
+      allowNull: true,
       references: { model: 'Users', key: 'id' }
     },
-    email: { // Email convidado (importante caso o usuário ainda não exista)
+    email: {
       type: DataTypes.STRING,
       allowNull: false
     },
+    // --- ALTERAÇÃO AQUI: Novos Cargos ---
     role: {
-      type: DataTypes.ENUM('ADMIN', 'USER'),
-      defaultValue: 'USER',
+      type: DataTypes.ENUM('ADMIN', 'MANAGER', 'VIEWER'),
+      defaultValue: 'VIEWER',
       allowNull: false
     },
+    // ------------------------------------
     status: {
       type: DataTypes.ENUM('PENDING', 'ACTIVE', 'DECLINED'),
       defaultValue: 'PENDING',
@@ -49,7 +51,7 @@ module.exports = (sequelize, DataTypes) => {
     modelName: 'TenantMember',
     timestamps: true,
     indexes: [
-      { unique: true, fields: ['tenantId', 'email'] } // Um email só pode ser convidado uma vez por tenant
+      { unique: true, fields: ['tenantId', 'email'] }
     ]
   });
   return TenantMember;

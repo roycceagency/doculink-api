@@ -1,6 +1,8 @@
+// src/features/contact/contact.service.js
 'use strict';
+
 const { Contact } = require('../../models');
-const { Op } = require('sequelize'); // Garanta que Op está importado
+const { Op } = require('sequelize');
 
 /**
  * Cria um novo contato na lista do usuário, evitando duplicatas.
@@ -19,8 +21,10 @@ const createContact = async (user, contactData) => {
   if (!created) {
     // Se o contato já existia, atualiza seus dados
     contact.name = name;
-    contact.cpf = cpf;
-    contact.phone = phone;
+    if (cpf) contact.cpf = cpf;
+    if (phone) contact.phone = phone;
+    // Se quiser reativar um contato inativo ao recriá-lo:
+    // contact.status = 'ACTIVE'; 
     await contact.save();
   }
 
@@ -39,6 +43,12 @@ const listContacts = async (user) => {
   return contacts;
 };
 
+/**
+ * Atualiza um contato específico.
+ * @param {User} user - O usuário autenticado.
+ * @param {string} contactId - ID do contato.
+ * @param {object} updateData - Campos a atualizar.
+ */
 const updateContact = async (user, contactId, updateData) => {
   const contact = await Contact.findOne({ where: { id: contactId, ownerId: user.id } });
   if (!contact) {
@@ -58,6 +68,11 @@ const updateContact = async (user, contactId, updateData) => {
   return contact;
 };
 
+/**
+ * Deleta um contato permanentemente.
+ * @param {User} user - O usuário autenticado.
+ * @param {string} contactId - ID do contato.
+ */
 const deleteContact = async (user, contactId) => {
     const contact = await Contact.findOne({ where: { id: contactId, ownerId: user.id } });
     if (!contact) {
@@ -66,7 +81,11 @@ const deleteContact = async (user, contactId) => {
     await contact.destroy();
 };
 
-
+/**
+ * Inativa múltiplos contatos de uma vez (Bulk Action).
+ * @param {User} user - O usuário autenticado.
+ * @param {Array<string>} contactIds - Lista de IDs.
+ */
 const inactivateContactsBulk = async (user, contactIds) => {
   // O 'update' do Sequelize pode atualizar múltiplos registros de uma vez
   const [affectedCount] = await Contact.update(

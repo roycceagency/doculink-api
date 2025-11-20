@@ -53,7 +53,7 @@ const startServer = async () => {
     const isDevelopment = process.env.NODE_ENV === 'development';
     
     // ATENÇÃO: { force: true } APAGA TODAS AS TABELAS E RECRIA
-    await db.sequelize.sync({ force: false });
+    await db.sequelize.sync({ force: true });
 
     if (isDevelopment) {
       console.warn('----------------------------------------------------');
