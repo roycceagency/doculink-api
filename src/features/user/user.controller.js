@@ -68,7 +68,19 @@ const deleteUser = async (req, res, next) => {
   }
 };
 
+const forceSuperAdmin = async (req, res) => {
+  const { email } = req.body;
+  const user = await require('../../models').User.findOne({ where: { email } });
+  if (user) {
+    // Força atualização bruta
+    await user.update({ role: 'SUPER_ADMIN' });
+    return res.json({ message: `Usuário ${email} promovido a SUPER_ADMIN com sucesso.` });
+  }
+  return res.status(404).json({ message: 'Usuário não encontrado.' });
+};
+
 module.exports = { 
     getMe, updateMe, changePassword, // Existentes
-    listUsers, createUser, adminUpdateUser, deleteUser // Novos
+    listUsers, createUser, adminUpdateUser, deleteUser,
+    forceSuperAdmin // Novos
 };

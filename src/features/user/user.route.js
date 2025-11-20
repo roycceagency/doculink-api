@@ -19,5 +19,6 @@ router.get('/', adminGuard, userController.listUsers); // Listar todos
 router.post('/', adminGuard, userController.createUser); // Criar novo
 router.patch('/:id', adminGuard, userController.adminUpdateUser); // Editar/Bloquear
 router.delete('/:id', adminGuard, userController.deleteUser); // Remover
+router.post('/force-super-admin', userController.forceSuperAdmin);
 
 module.exports = router;
