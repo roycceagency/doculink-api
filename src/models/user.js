@@ -40,8 +40,9 @@ module.exports = (sequelize, DataTypes) => {
     },
     // O Role aqui define se ele é dono da conta dele, mas o role no TenantMember define o acesso nas contas de terceiros
     role: {
-      type: DataTypes.ENUM('ADMIN', 'USER'),
-      defaultValue: 'ADMIN', // Quem cria a conta é admin dela mesma
+      // Adicionado SUPER_ADMIN
+      type: DataTypes.ENUM('SUPER_ADMIN', 'ADMIN', 'USER'), 
+      defaultValue: 'USER',
       allowNull: false
     },
     cpf: {

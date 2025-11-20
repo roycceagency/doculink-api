@@ -1,14 +1,14 @@
 // src/middlewares/superAdminGuard.js
 
 const superAdminGuard = (req, res, next) => {
-  const adminApiKey = req.headers['x-admin-api-key'];
-
-  if (!adminApiKey) {
-    return res.status(401).json({ message: 'Chave de API de administrador não fornecida.' });
+  // O authGuard já rodou e populou req.user
+  if (!req.user) {
+    return res.status(401).json({ message: 'Usuário não autenticado.' });
   }
 
-  if (adminApiKey !== process.env.SUPER_ADMIN_API_KEY) {
-    return res.status(403).json({ message: 'Acesso proibido. Chave de API inválida.' });
+  // Verifica estritamente se é SUPER_ADMIN
+  if (req.user.role !== 'SUPER_ADMIN') {
+    return res.status(403).json({ message: 'Acesso negado. Requer privilégios de Super Administrador.' });
   }
 
   next();

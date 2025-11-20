@@ -31,7 +31,7 @@ const seedDefaultAdmin = async () => {
     name: 'Super Admin',
     email: adminEmail,
     passwordHash: passwordHash,
-    role: 'ADMIN', // Importante
+   role: 'SUPER_ADMIN', // <--- MUDANÇA AQUI
     status: 'ACTIVE'
   });
 

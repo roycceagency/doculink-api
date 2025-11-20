@@ -1,16 +1,15 @@
-// src/features/audit/audit.route.js
-'use strict';
-
 const { Router } = require('express');
 const auditController = require('./audit.controller');
 const authGuard = require('../../middlewares/authGuard');
+const superAdminGuard = require('../../middlewares/superAdminGuard');
 
 const router = Router();
-
-// Protege a rota: Apenas usuários logados podem ver a auditoria
 router.use(authGuard);
 
-// GET /api/audit -> Lista logs formatados
-router.get('/', auditController.getLogs);
+// Se a rota /audit for para ver logs GLOBAIS do sistema, use superAdminGuard
+// Se for para ver logs DO TENANT, use adminGuard.
+// Vamos assumir que o Admin vê logs da empresa dele.
+
+router.get('/', auditController.getLogs); // O service já filtra por tenantId
 
 module.exports = router;
