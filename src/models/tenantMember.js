@@ -30,13 +30,13 @@ module.exports = (sequelize, DataTypes) => {
       type: DataTypes.STRING,
       allowNull: false
     },
-    // --- ALTERAÇÃO AQUI: Novos Cargos ---
+    // --- CORREÇÃO AQUI: Adicionado SUPER_ADMIN ---
     role: {
-      type: DataTypes.ENUM('ADMIN', 'MANAGER', 'VIEWER'),
+      type: DataTypes.ENUM('SUPER_ADMIN', 'ADMIN', 'MANAGER', 'VIEWER'),
       defaultValue: 'VIEWER',
       allowNull: false
     },
-    // ------------------------------------
+    // ---------------------------------------------
     status: {
       type: DataTypes.ENUM('PENDING', 'ACTIVE', 'DECLINED'),
       defaultValue: 'PENDING',

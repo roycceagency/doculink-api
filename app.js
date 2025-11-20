@@ -9,12 +9,13 @@ const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const path = require('path');
-const bcrypt = require('bcrypt'); // Necessário para criar o hash da senha aqui
+const bcrypt = require('bcrypt'); // Necessário para hash da senha no seed
 
 // Importação de Rotas e Modelos
 const routes = require('./src/routes');
 const db = require('./src/models');
-const { User, Tenant, Plan } = require('./src/models'); // Importa modelos diretamente para o Seed
+// Importamos os modelos explicitamente para usar no Seed embutido
+const { User, Tenant, Plan, TenantMember } = require('./src/models'); 
 const { startReminderJob } = require('./src/services/cron.service');
 
 // 3. Inicialização do Express
@@ -23,10 +24,10 @@ const PORT = process.env.PORT || 3333;
 
 // 4. Configuração dos Middlewares
 app.use(helmet());
-app.use(cors({ origin: '*' }));
+app.use(cors({ origin: '*' })); // Em produção, restrinja para a URL do front
 app.use(express.json());
 
-// 5. Servir Arquivos Estáticos
+// 5. Servir Arquivos Estáticos (Uploads)
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // 6. Rotas da API
@@ -47,88 +48,110 @@ app.use((err, req, res, next) => {
 // 8. Sincronização e Inicialização do Servidor
 const startServer = async () => {
   try {
-    console.log('Conectando ao banco de dados...');
+    console.log('🔌 Conectando ao banco de dados...');
     await db.sequelize.authenticate();
     console.log('✅ Conexão com o banco de dados estabelecida.');
 
-    console.log('Sincronizando modelos...');
-    // Em produção, use { alter: true } ou migrations. 
-    // Em desenvolvimento, force: true recria tudo (apaga dados).
-    const isDevelopment = process.env.NODE_ENV === 'development';
-    await db.sequelize.sync({ force: isDevelopment }); 
-    
-    if (isDevelopment) {
-      console.warn('⚠️  DB sincronizado com "force: true". Dados resetados.');
-    } else {
-      console.log('✅ Modelos sincronizados.');
-    }
+    console.log('🔄 Sincronizando modelos...');
+    // Use { alter: true } para tentar atualizar ENUMs sem apagar dados.
+    // Use { force: true } APENAS se quiser resetar o banco (cuidado!).
+    await db.sequelize.sync({ force: true }); 
+    console.log('✅ Modelos sincronizados.');
 
-    // --- INÍCIO: LÓGICA DE SEED DIRETA NO APP.JS ---
-    console.log('🌱 Verificando configuração inicial (Seed)...');
 
-    // A. Criar Planos
-    const enterprisePlan = await Plan.create({
+    // --- INÍCIO: SEED EMBUTIDO (CRIAÇÃO/CORREÇÃO DO SUPER ADMIN) ---
+    console.log('🌱 Executando Seed de Inicialização...');
+
+    // A. Garantir Planos
+    const enterprisePlan = await Plan.findOne({ where: { slug: 'empresa' } }) || await Plan.create({
         name: 'Empresa',
         slug: 'empresa',
         price: 79.90,
         userLimit: 10,
         documentLimit: 100,
         features: ['API completa', 'Branding completo']
-    }).catch(() => Plan.findOne({ where: { slug: 'empresa' } })); // Se já existe, busca
+    });
 
     await Plan.bulkCreate([
         { name: 'Básico', slug: 'basico', price: 29.90, userLimit: 3, documentLimit: 20 },
         { name: 'Profissional', slug: 'profissional', price: 49.90, userLimit: 5, documentLimit: 50 }
     ], { ignoreDuplicates: true });
 
-    // B. Criar Tenant Principal
+    // B. Garantir Tenant Principal
     const [mainTenant] = await Tenant.findOrCreate({
         where: { slug: 'main-org' },
         defaults: {
             name: 'Organização Principal (Super Admin)',
             status: 'ACTIVE',
-            planId: enterprisePlan?.id
+            planId: enterprisePlan.id
         }
     });
 
-    // C. Criar Super Admin
+    // C. Garantir Usuário SUPER_ADMIN
     const adminEmail = process.env.DEFAULT_ADMIN_EMAIL || 'admin@doculink.com';
     const adminPass = process.env.DEFAULT_ADMIN_PASSWORD || '123456';
     
-    const existingAdmin = await User.findOne({ where: { email: adminEmail } });
+    let superAdminUser = await User.findOne({ where: { email: adminEmail } });
 
-    if (!existingAdmin) {
+    if (!superAdminUser) {
+        // Cria novo se não existir
         const passwordHash = await bcrypt.hash(adminPass, 10);
-        
-        const superAdmin = await User.create({
+        superAdminUser = await User.create({
             tenantId: mainTenant.id,
             name: 'Super Admin',
             email: adminEmail,
             passwordHash: passwordHash,
-            role: 'SUPER_ADMIN', // <--- FORÇADO AQUI
+            role: 'SUPER_ADMIN', // <--- IMPORTANTE: Role no User
             cpf: '00000000000',
             phoneWhatsE164: '5511999999999',
             status: 'ACTIVE'
         });
-        
-        console.log(`✅ SUPER_ADMIN CRIADO COM SUCESSO!`);
-        console.log(`📧 Email: ${superAdmin.email}`);
-        console.log(`🔑 Role: ${superAdmin.role}`);
+        console.log(`✨ Usuário Super Admin CRIADO.`);
     } else {
-        // Se já existe, força atualização para garantir a role
-        if (existingAdmin.role !== 'SUPER_ADMIN') {
-            console.log(`⚠️  Usuário Admin existia mas com role errada (${existingAdmin.role}). Corrigindo...`);
-            existingAdmin.role = 'SUPER_ADMIN';
-            await existingAdmin.save();
-            console.log(`✅ Usuário promovido para SUPER_ADMIN.`);
+        // Se já existe, verifica e CORRIGE a role se necessário
+        if (superAdminUser.role !== 'SUPER_ADMIN') {
+            console.log(`⚠️ Corrigindo role do Usuário Admin de ${superAdminUser.role} para SUPER_ADMIN...`);
+            superAdminUser.role = 'SUPER_ADMIN';
+            await superAdminUser.save();
+            console.log(`✅ Role do Usuário corrigida.`);
         } else {
-            console.log('✅ Super Admin já configurado corretamente.');
+            console.log(`✅ Usuário Super Admin já existe e está correto.`);
         }
     }
-    // --- FIM: LÓGICA DE SEED ---
+
+    // D. Garantir Vínculo na tabela TenantMembers como SUPER_ADMIN
+    // Isso resolve o problema de ele abrir como ADMIN se a lógica buscar na tabela de membros
+    const memberRecord = await TenantMember.findOne({
+        where: { userId: superAdminUser.id, tenantId: mainTenant.id }
+    });
+
+    if (memberRecord) {
+        if (memberRecord.role !== 'SUPER_ADMIN') {
+            console.log(`⚠️ Corrigindo role do Membro Admin de ${memberRecord.role} para SUPER_ADMIN...`);
+            memberRecord.role = 'SUPER_ADMIN';
+            await memberRecord.save();
+            console.log(`✅ Role do Membro corrigida.`);
+        }
+    } else {
+        // Se não existir o registro de membro (apenas o ownerId no tenant), cria o membro explicitamente
+        console.log(`➕ Adicionando registro explícito em TenantMembers...`);
+        await TenantMember.create({
+            userId: superAdminUser.id,
+            tenantId: mainTenant.id,
+            email: superAdminUser.email,
+            role: 'SUPER_ADMIN', // <--- IMPORTANTE: Role no Member
+            status: 'ACTIVE'
+        });
+        console.log(`✅ Registro de membro criado.`);
+    }
+    
+    console.log('🌱 Seed finalizado com sucesso.');
+    // --- FIM DO SEED ---
+
 
     app.listen(PORT, () => {
       console.log(`🚀 Servidor rodando na porta ${PORT}`);
+      // Inicia os jobs agendados
       startReminderJob();
     });
 
