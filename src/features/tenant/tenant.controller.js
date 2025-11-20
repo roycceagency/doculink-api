@@ -73,14 +73,15 @@ const updateTenant = async (req, res, next) => {
  */
 const getMyTenant = async (req, res, next) => {
   try {
-    // req.user.tenantId vem do token JWT (contexto atual)
+    // O req.user.tenantId agora reflete o token (perfil selecionado),
+    // graças à correção no authGuard.
     const tenant = await tenantService.findTenantById(req.user.tenantId);
+    
     return res.status(200).json(tenant);
   } catch (error) {
     next(error);
   }
 };
-
 /**
  * Lista todos os Tenants disponíveis para o usuário trocar de perfil.
  * Inclui o tenant pessoal (dono) e tenants onde foi convidado (membro).
