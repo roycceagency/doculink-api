@@ -6,12 +6,8 @@ const { Model } = require('sequelize');
 module.exports = (sequelize, DataTypes) => {
   class User extends Model {
     static associate(models) {
-      // Tenant "dono" (aquele que foi criado no cadastro)
       User.belongsTo(models.Tenant, { foreignKey: 'tenantId', as: 'ownTenant' });
-      
-      // Tenants onde ele é membro (convidado)
       User.hasMany(models.TenantMember, { foreignKey: 'userId', as: 'memberships' });
-      
       User.hasMany(models.Session, { foreignKey: 'userId' });
       User.hasMany(models.Document, { foreignKey: 'ownerId', as: 'ownedDocuments' });
     }
@@ -23,7 +19,7 @@ module.exports = (sequelize, DataTypes) => {
       primaryKey: true,
       allowNull: false
     },
-    tenantId: { // Este continua sendo o Tenant "Pessoal/Principal" criado no registro
+    tenantId: {
       type: DataTypes.UUID,
       allowNull: false,
       references: { model: 'Tenants', key: 'id' }
@@ -38,13 +34,13 @@ module.exports = (sequelize, DataTypes) => {
       unique: true,
       validate: { isEmail: true }
     },
-    // O Role aqui define se ele é dono da conta dele, mas o role no TenantMember define o acesso nas contas de terceiros
+    // --- GARANTA QUE SUPER_ADMIN ESTÁ AQUI ---
     role: {
-      // Adicionado SUPER_ADMIN
-      type: DataTypes.ENUM('SUPER_ADMIN', 'ADMIN', 'USER'), 
-      defaultValue: 'USER',
+      type: DataTypes.ENUM('SUPER_ADMIN', 'ADMIN', 'MANAGER', 'VIEWER', 'USER'),
+      defaultValue: 'USER', 
       allowNull: false
     },
+    // -----------------------------------------
     cpf: {
       type: DataTypes.STRING,
       allowNull: true,
@@ -59,7 +55,7 @@ module.exports = (sequelize, DataTypes) => {
       allowNull: false
     },
     status: {
-      type: DataTypes.STRING, // ACTIVE, BLOCKED
+      type: DataTypes.STRING,
       defaultValue: 'ACTIVE',
       allowNull: false
     }
@@ -68,14 +64,6 @@ module.exports = (sequelize, DataTypes) => {
     modelName: 'User',
     timestamps: true,
     updatedAt: false,
-    defaultScope: {
-      attributes: { exclude: ['passwordHash'] }
-    },
-    scopes: {
-      withPassword: {
-        attributes: { include: ['passwordHash'] }
-      }
-    }
   });
   return User;
 };
