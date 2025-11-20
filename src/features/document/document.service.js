@@ -93,12 +93,12 @@ const createDocumentAndHandleUpload = async ({ file, title, deadlineAt, user }) 
  * Valida um Buffer de PDF contra os registros do banco de dados (Prova de Autenticidade).
  */
 const validatePdfIntegrity = async (fileBuffer) => {
-  // 1. Calcula o SHA-256 do arquivo recebido na hora
+  // 1. Calcula o SHA-256 do arquivo recebido
   const hash = crypto.createHash('sha256').update(fileBuffer).digest('hex');
 
-  console.log(`[Validator] Hash calculado do arquivo: ${hash}`);
+  console.log(`[Validator] Verificando Hash: ${hash}`);
 
-  // 2. Busca no banco
+  // 2. Busca no banco pelo Hash
   const doc = await Document.findOne({
     where: { sha256: hash },
     include: [
@@ -115,35 +115,24 @@ const validatePdfIntegrity = async (fileBuffer) => {
     ]
   });
 
-  // 3. Análise do Resultado
-  if (!doc) {
-    // Não existe nenhum documento no sistema com esse conteúdo exato
+  // 3. Regra Estrita: Só é válido se existir E estiver ASSINADO (SIGNED)
+  // Qualquer outra coisa (Rascunho, Pendente, Não encontrado) é inválido para fins de prova.
+  
+  if (!doc || doc.status !== 'SIGNED') {
     return { 
         valid: false, 
-        hashCalculated: hash,
-        reason: 'NOT_FOUND' 
+        hashCalculated: hash, // Retorna o hash calculado para mostrar que não bateu ou não é válido
+        reason: !doc ? 'NOT_FOUND' : 'NOT_SIGNED'
     };
   }
 
-  if (doc.status !== 'SIGNED') {
-    // O arquivo existe, é nosso, mas ainda não foi finalizado (é um rascunho ou parcial)
-    return { 
-        valid: false, 
-        hashCalculated: hash,
-        document: { title: doc.title, status: doc.status },
-        reason: 'NOT_SIGNED_YET' 
-    };
-  }
-
-  // 4. Sucesso: O Hash bate e o documento está assinado
+  // 4. Sucesso: Documento Assinado e Íntegro
   return {
     valid: true,
-    hashCalculated: hash, // Retorna o hash para mostrar na tela
+    hashCalculated: hash,
     document: {
-      id: doc.id,
       title: doc.title,
-      status: doc.status,
-      createdAt: doc.createdAt,
+      signedAt: doc.updatedAt, // Data da finalização
       ownerName: doc.owner.name,
       signers: doc.Signers
     }
