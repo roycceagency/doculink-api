@@ -68,16 +68,31 @@ const deleteUser = async (req, res, next) => {
   }
 };
 
-const forceSuperAdmin = async (req, res) => {
-  const { email } = req.body;
-  const user = await require('../../models').User.findOne({ where: { email } });
-  if (user) {
-    // Força atualização bruta
+const forceSuperAdmin = async (req, res, next) => {
+  try {
+    // Define o e-mail fixo do admin
+    const targetEmail = process.env.DEFAULT_ADMIN_EMAIL || 'admin@doculink.com';
+
+    // Busca o usuário
+    const user = await require('../../models').User.findOne({ where: { email: targetEmail } });
+
+    if (!user) {
+      return res.status(404).json({ message: `Usuário padrão (${targetEmail}) não encontrado no banco.` });
+    }
+
+    // Força a atualização direta
     await user.update({ role: 'SUPER_ADMIN' });
-    return res.json({ message: `Usuário ${email} promovido a SUPER_ADMIN com sucesso.` });
+
+    return res.status(200).json({ 
+        message: 'SUCESSO: Permissão atualizada.',
+        details: `O usuário ${user.email} agora é ${user.role}. Faça logout e login novamente.`
+    });
+
+  } catch (error) {
+    next(error);
   }
-  return res.status(404).json({ message: 'Usuário não encontrado.' });
 };
+
 
 module.exports = { 
     getMe, updateMe, changePassword, // Existentes
