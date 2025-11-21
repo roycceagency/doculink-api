@@ -1,3 +1,4 @@
+// src/services/asaas.service.js
 'use strict';
 
 const axios = require('axios');
@@ -11,6 +12,29 @@ class AsaasService {
         'access_token': process.env.ASAAS_API_KEY
       }
     });
+  }
+
+  // --- HELPER PARA FORMATAR ERRO ---
+  _formatError(error, context) {
+    // Tenta pegar a mensagem de erro mais específica possível
+    const responseData = error.response?.data;
+    let details = error.message;
+
+    if (responseData) {
+        if (responseData.errors && Array.isArray(responseData.errors)) {
+            // Formato padrão Asaas: { errors: [{ code, description }] }
+            details = responseData.errors.map(e => e.description).join(' | ');
+        } else if (typeof responseData === 'string') {
+            // Erros brutos (ex: HTML de erro 500)
+            details = responseData;
+        } else {
+            // Outros objetos JSON
+            details = JSON.stringify(responseData);
+        }
+    }
+
+    console.error(`[Asaas] Falha em ${context}:`, details);
+    return new Error(`Asaas ${context}: ${details}`);
   }
 
   // --- GESTÃO DE CLIENTES ---
@@ -30,8 +54,7 @@ class AsaasService {
       });
       return response.data;
     } catch (error) {
-      console.error('[Asaas] Erro ao criar cliente:', error.response?.data || error.message);
-      throw new Error(`Erro na integração Asaas (Cliente): ${JSON.stringify(error.response?.data?.errors)}`);
+      throw this._formatError(error, 'Criar Cliente');
     }
   }
 
@@ -40,9 +63,8 @@ class AsaasService {
       const response = await this.api.get(`/customers/${customerId}`);
       return response.data;
     } catch (error) {
-        // Se for 404, retorna null
        if (error.response && error.response.status === 404) return null;
-       throw error;
+       throw this._formatError(error, 'Buscar Cliente');
     }
   }
 
@@ -52,7 +74,7 @@ class AsaasService {
     try {
       const payload = {
         customer: subscriptionData.customerId,
-        billingType: subscriptionData.billingType, // 'CREDIT_CARD', 'PIX', 'BOLETO'
+        billingType: subscriptionData.billingType,
         value: subscriptionData.value,
         nextDueDate: subscriptionData.nextDueDate,
         cycle: subscriptionData.cycle || 'MONTHLY',
@@ -60,13 +82,11 @@ class AsaasService {
         externalReference: subscriptionData.externalReference
       };
 
-      // Adiciona dados de cartão se necessário
       if (subscriptionData.billingType === 'CREDIT_CARD' && subscriptionData.creditCard) {
         payload.creditCard = subscriptionData.creditCard;
         payload.creditCardHolderInfo = subscriptionData.creditCardHolderInfo;
       }
 
-      // Se for Token de cartão (preferível)
       if (subscriptionData.billingType === 'CREDIT_CARD' && subscriptionData.creditCardToken) {
           payload.creditCardToken = subscriptionData.creditCardToken;
       }
@@ -74,28 +94,39 @@ class AsaasService {
       const response = await this.api.post('/subscriptions', payload);
       return response.data;
     } catch (error) {
-      console.error('[Asaas] Erro ao criar assinatura:', error.response?.data || error.message);
-      throw new Error(`Erro na integração Asaas (Assinatura): ${JSON.stringify(error.response?.data?.errors)}`);
+      throw this._formatError(error, 'Criar Assinatura');
     }
   }
 
   async getSubscription(subscriptionId) {
-    const response = await this.api.get(`/subscriptions/${subscriptionId}`);
-    return response.data;
+    try {
+        const response = await this.api.get(`/subscriptions/${subscriptionId}`);
+        return response.data;
+    } catch (error) {
+        throw this._formatError(error, 'Buscar Assinatura');
+    }
   }
 
   async cancelSubscription(subscriptionId) {
-      const response = await this.api.delete(`/subscriptions/${subscriptionId}`);
-      return response.data;
+      try {
+        const response = await this.api.delete(`/subscriptions/${subscriptionId}`);
+        return response.data;
+      } catch (error) {
+        throw this._formatError(error, 'Cancelar Assinatura');
+      }
   }
 
   // --- COBRANÇAS E PIX ---
 
   async listSubscriptionPayments(subscriptionId) {
-    const response = await this.api.get('/payments', {
-      params: { subscription: subscriptionId }
-    });
-    return response.data; // Retorna objeto com { data: [...] }
+    try {
+        const response = await this.api.get('/payments', {
+        params: { subscription: subscriptionId }
+        });
+        return response.data;
+    } catch (error) {
+        throw this._formatError(error, 'Listar Pagamentos');
+    }
   }
 
   async getPixQrCode(paymentId) {
@@ -103,8 +134,7 @@ class AsaasService {
         const response = await this.api.get(`/payments/${paymentId}/pixQrCode`);
         return response.data;
     } catch (error) {
-        console.error('[Asaas] Erro ao gerar PIX:', error.response?.data);
-        throw error;
+        throw this._formatError(error, 'Gerar PIX');
     }
   }
 }
