@@ -139,12 +139,12 @@ const getAllDocuments = async (req, res, next) => {
 const getStats = async (req, res, next) => {
   try {
     const stats = await documentService.getDocumentStats(req.user);
+    // Agora o stats retorna { counts: {...}, storage: {...}, recents: [...] }
     res.status(200).json(stats);
   } catch (error) {
     next(error);
   }
 };
-
 /**
  * Recebe um arquivo PDF (buffer), calcula o hash e verifica se existe no banco.
  */

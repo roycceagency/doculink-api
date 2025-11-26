@@ -1,5 +1,7 @@
 // src/features/subscription/subscription.controller.js
 'use strict';
+const { Plan } = require('../../models');
+
 
 const subscriptionService = require('./subscription.service');
 
@@ -32,4 +34,22 @@ const cancel = async (req, res, next) => {
     }
 };
 
-module.exports = { createSubscription, cancel };
+const updatePlan = async (req, res, next) => {
+    try {
+        const { id } = req.params;
+        const { name, price, userLimit, documentLimit, features } = req.body;
+        
+        const plan = await Plan.findByPk(id);
+        if (!plan) return res.status(404).json({ message: 'Plano não encontrado' });
+
+        await plan.update({
+            name, price, userLimit, documentLimit, features
+        });
+
+        return res.status(200).json(plan);
+    } catch (error) {
+        next(error);
+    }
+};
+
+module.exports = { createSubscription, cancel, updatePlan};

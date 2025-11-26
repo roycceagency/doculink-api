@@ -7,6 +7,7 @@ const path = require('path');
 const documentController = require('./document.controller');
 const authGuard = require('../../middlewares/authGuard');
 const roleGuard = require('../../middlewares/roleGuard'); // Middleware de permissões
+const folderController = require('./folder.controller');
 
 const router = Router();
 
@@ -31,6 +32,13 @@ router.post('/validate-file', uploadMemory.single('file'), documentController.va
 
 // --- ROTAS PROTEGIDAS (REQUER LOGIN) ---
 router.use(authGuard);
+
+
+// Rotas de Pastas (Devem vir ANTES de /:id para não confundir)
+router.get('/folders', roleGuard(['ADMIN', 'MANAGER', 'VIEWER']), folderController.list);
+router.post('/folders', roleGuard(['ADMIN', 'MANAGER']), folderController.create);
+router.post('/folders/move', roleGuard(['ADMIN', 'MANAGER']), folderController.move);
+router.delete('/folders/:id', roleGuard(['ADMIN', 'MANAGER']), folderController.remove);
 
 
 // --- ROTAS DE LEITURA (Acessíveis por ADMIN, MANAGER e VIEWER) ---
@@ -73,5 +81,8 @@ router.post('/:id/expire', roleGuard(['ADMIN', 'MANAGER']), documentController.e
 
 // Aplicar assinatura digital PAdES (se configurado)
 router.post('/:id/pades', roleGuard(['ADMIN', 'MANAGER']), documentController.applyPades);
+
+
+
 
 module.exports = router;

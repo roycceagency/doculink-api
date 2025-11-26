@@ -33,4 +33,19 @@ const update = async (req, res, next) => {
   }
 };
 
-module.exports = { get, update };
+const updateEmailTemplate = async (req, res, next) => {
+    try {
+        const { htmlContent } = req.body; // HTML puro vindo de um editor WYSIWYG do front
+        const settings = await TenantSettings.findOne({ where: { tenantId: req.user.tenantId } });
+        
+        if (!settings) {
+            await TenantSettings.create({ tenantId: req.user.tenantId, finalEmailTemplate: htmlContent });
+        } else {
+            settings.finalEmailTemplate = htmlContent;
+            await settings.save();
+        }
+        res.json({ message: 'Template atualizado.' });
+    } catch (error) { next(error); }
+};
+
+module.exports = { get, update, updateEmailTemplate };

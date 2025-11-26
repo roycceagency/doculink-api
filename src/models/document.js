@@ -6,7 +6,15 @@ module.exports = (sequelize, DataTypes) => {
     static associate(models) {
       Document.belongsTo(models.Tenant, { foreignKey: 'tenantId' });
       Document.belongsTo(models.User, { foreignKey: 'ownerId', as: 'owner' });
-      Document.hasMany(models.Signer, { foreignKey: 'documentId' });
+      
+      // Nova associação: Pasta
+      // Se você ainda não criou o arquivo folder.js, o Sequelize vai reclamar se tentar rodar sem ele.
+      // Certifique-se de criar o model Folder antes de rodar a sync.
+      if (models.Folder) {
+          Document.belongsTo(models.Folder, { foreignKey: 'folderId', as: 'folder' });
+      }
+
+      Document.hasMany(models.Signer, { foreignKey: 'documentId', as: 'Signers' });
       Document.hasOne(models.Certificate, { foreignKey: 'documentId' });
     }
   }
@@ -27,7 +35,14 @@ module.exports = (sequelize, DataTypes) => {
       allowNull: false,
       references: { model: 'Users', key: 'id' }
     },
-       autoReminders: {
+    // --- NOVO CAMPO ---
+    folderId: {
+      type: DataTypes.UUID,
+      allowNull: true, // Se for null, o arquivo está na "Raiz"
+      references: { model: 'Folders', key: 'id' }
+    },
+    // ------------------
+    autoReminders: {
       type: DataTypes.BOOLEAN,
       defaultValue: false,
       allowNull: false,

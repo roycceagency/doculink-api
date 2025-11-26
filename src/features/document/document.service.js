@@ -434,18 +434,54 @@ const findAllDocuments = async (user, status) => {
  * Obtém estatísticas do Tenant atual.
  */
 const getDocumentStats = async (user) => {
-  const tenantId = user.tenantId; // Filtra pelo contexto do token
+  const tenantId = user.tenantId;
 
-  const [pendingCount, signedCount, totalCount] = await Promise.all([
+  // 1. Contagens de Status em Paralelo
+  const [pendingCount, signedCount, expiredCount, draftCount, totalCount] = await Promise.all([
     Document.count({ where: { tenantId, status: { [Op.in]: ['READY', 'PARTIALLY_SIGNED'] } } }),
     Document.count({ where: { tenantId, status: 'SIGNED' } }),
-    Document.count({ where: { tenantId, status: { [Op.notIn]: ['CANCELLED'] } } })
+    Document.count({ where: { tenantId, status: 'EXPIRED' } }),
+    Document.count({ where: { tenantId, status: 'DRAFT' } }),
+    Document.count({ where: { tenantId, status: { [Op.ne]: 'CANCELLED' } } })
   ]);
 
+  // 2. Cálculo de Armazenamento Utilizado (Soma do campo size)
+  // O resultado pode vir null se não houver docs, então tratamos com || 0
+  const storageSum = await Document.sum('size', { 
+    where: { tenantId, status: { [Op.ne]: 'CANCELLED' } } 
+  });
+  
+  // Converte bytes para Megabytes para o front
+  const storageUsedMB = storageSum ? (storageSum / (1024 * 1024)).toFixed(2) : 0;
+
+  // 3. Documentos Recentes (Últimos 5 modificados)
+  const recentDocs = await Document.findAll({
+      where: { tenantId },
+      limit: 5,
+      order: [['updatedAt', 'DESC']],
+      attributes: ['id', 'title', 'status', 'updatedAt', 'mimeType'],
+      include: [
+          { 
+            model: User, 
+            as: 'owner', 
+            attributes: ['name'] 
+          }
+      ]
+  });
+
   return {
-    pending: pendingCount,
-    signed: signedCount,
-    total: totalCount,
+    counts: {
+        pending: pendingCount,
+        signed: signedCount,
+        expired: expiredCount,
+        draft: draftCount,
+        total: totalCount
+    },
+    storage: {
+        usedBytes: storageSum || 0,
+        usedMB: parseFloat(storageUsedMB)
+    },
+    recents: recentDocs
   };
 };
 

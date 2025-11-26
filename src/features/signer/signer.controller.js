@@ -63,17 +63,17 @@ const confirmSignatureArt = async (req, res, next) => {
 const commitSignature = async (req, res, next) => {
   try {
     const { clientFingerprint, signatureImage } = req.body;
-    if (!clientFingerprint || !signatureImage) {
-      return res.status(400).json({ message: 'Dados incompletos.' });
-    }
+    
+    // Pega o IP real (considerando proxies/load balancers)
+    const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
 
-    // Agora capturamos o retorno do service
     const result = await signerService.commitSignature(
         req.document, 
         req.signer, 
         clientFingerprint, 
         signatureImage, 
-        req
+        req,
+        ip // <--- Passando IP explicitamente
     );
     
     res.status(200).json({ 

@@ -33,6 +33,14 @@ module.exports = (sequelize, DataTypes) => {
     // Integração Email (Resend/SMTP)
     resendApiKey: DataTypes.STRING,
     resendActive: { type: DataTypes.BOOLEAN, defaultValue: true },
+
+    // --- NOVO CAMPO ---
+    finalEmailTemplate: {
+      type: DataTypes.TEXT,
+      allowNull: true,
+      comment: 'Template HTML personalizado para o e-mail de conclusão de assinaturas'
+    }
+    // ------------------
     
   }, {
     sequelize,

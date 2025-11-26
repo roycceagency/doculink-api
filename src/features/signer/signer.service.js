@@ -2,13 +2,23 @@
 'use strict';
 
 const fs = require('fs/promises');
-const fsSync = require('fs'); // Usado para verificações síncronas rápidas
+const fsSync = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const bcrypt = require('bcrypt');
+const { v4: uuidv4 } = require('uuid'); // Necessário para o ID da assinatura visual
 
 // Importação dos Modelos
-const { Document, Signer, OtpCode, AuditLog, Certificate, User, sequelize } = require('../../models');
+const { 
+  Document, 
+  Signer, 
+  OtpCode, 
+  AuditLog, 
+  Certificate, 
+  User, 
+  TenantSettings, 
+  sequelize 
+} = require('../../models');
 
 // Importação dos Serviços
 const notificationService = require('../../services/notification.service');
@@ -25,7 +35,7 @@ const saveSignatureImage = async (base64Image, tenantId, signerId) => {
     throw new Error("Imagem da assinatura (Base64) não fornecida.");
   }
   
-  // Define o diretório de upload absoluto usando a raiz do projeto para evitar erros de caminho
+  // Define o diretório de upload absoluto usando a raiz do projeto
   const uploadDir = path.join(process.cwd(), 'uploads', tenantId, 'signatures');
   
   // Garante que o diretório existe
@@ -41,7 +51,6 @@ const saveSignatureImage = async (base64Image, tenantId, signerId) => {
   await fs.writeFile(filePath, imageBuffer);
   
   // Retorna o caminho RELATIVO (padrão POSIX para compatibilidade no banco)
-  // ex: uploads/tenant-id/signatures/xyz.png
   return path.join('uploads', tenantId, 'signatures', fileName);
 };
 
@@ -123,7 +132,6 @@ const startOtpVerification = async (signer, req) => {
     });
     
     // Envia via provedor (Z-API / Resend)
-    // Catch no erro para não travar o fluxo se um canal falhar
     notificationService.sendOtp(recipient, channel, otp, req.document.tenantId).catch(console.error);
     
     // Log de Auditoria
@@ -212,12 +220,14 @@ const saveSignaturePosition = async (signer, position) => {
 
 /**
  * Efetiva a assinatura.
- * 1. Gera Hash e ShortCode.
- * 2. Salva imagem da assinatura.
+ * 1. Gera Hash, ShortCode, UUID Visual.
+ * 2. Salva IP e Imagem.
  * 3. Atualiza Signer e Audita.
- * 4. Se TODOS assinaram: Gera PDF Final, Atualiza Doc, Gera Certificado, Envia E-mails.
+ * 4. Se TODOS assinaram: Gera PDF Final (com carimbos detalhados), e-mails customizados e certificado.
+ * 
+ * @param {string} userIp - IP do cliente passado pelo controller.
  */
-const commitSignature = async (document, signer, clientFingerprint, signatureImageBase64, req) => {
+const commitSignature = async (document, signer, clientFingerprint, signatureImageBase64, req, userIp) => {
     const transaction = await sequelize.transaction();
     let resultData = {};
 
@@ -235,11 +245,17 @@ const commitSignature = async (document, signer, clientFingerprint, signatureIma
         // 3. Salva Imagem da Assinatura
         const artefactPath = await saveSignatureImage(signatureImageBase64, document.tenantId, signer.id);
 
-        // 4. Atualiza Signatário
+        // 4. Atualiza Signatário (Com IP e UUID para o carimbo visual)
         signer.status = 'SIGNED';
         signer.signedAt = new Date();
         signer.signatureHash = signatureHash;
         signer.signatureArtefactPath = artefactPath;
+        
+        // --- NOVOS CAMPOS ---
+        signer.ip = userIp; // Salva o IP
+        signer.signatureUuid = uuidv4(); // Gera ID único para exibição no PDF
+        // --------------------
+
         await signer.save({ transaction });
 
         // 5. Log de Auditoria: SIGNED
@@ -250,9 +266,9 @@ const commitSignature = async (document, signer, clientFingerprint, signatureIma
             entityType: 'DOCUMENT',
             entityId: document.id,
             action: 'SIGNED',
-            ip: req.ip,
+            ip: userIp || req.ip,
             userAgent: req.headers['user-agent'],
-            payload: { signatureHash, artefactPath, shortCode, clientFingerprint }
+            payload: { signatureHash, artefactPath, shortCode, clientFingerprint, ip: userIp }
         }, transaction);
 
         // 6. Verifica se TODOS os signatários já assinaram
@@ -270,9 +286,9 @@ const commitSignature = async (document, signer, clientFingerprint, signatureIma
                 throw new Error("Arquivo original do documento não encontrado no servidor.");
             }
 
-            // 6a. Embute assinaturas visuais
-            // O pdf.service.js é responsável por resolver os caminhos das imagens
-            const signedPdfBuffer = await pdfService.embedSignatures(originalFilePath, signersInDoc);
+            // 6a. Embute assinaturas visuais (Carimbo Detalhado: IP, CPF, Hash, UUID)
+            // Agora passamos o objeto 'document' também para o PDF Service pegar o hash do doc e ID
+            const signedPdfBuffer = await pdfService.embedSignatures(originalFilePath, signersInDoc, document);
             
             // 6b. Salva novo PDF Assinado
             const signedFileStorageKey = document.storageKey.replace(/(\.[\w\d_-]+)$/i, '-signed$1');
@@ -313,37 +329,64 @@ const commitSignature = async (document, signer, clientFingerprint, signatureIma
                 action: 'CERTIFICATE_ISSUED'
             }, transaction);
 
-            // 6e. Envia E-mails de Conclusão (Assíncrono)
-            const owner = await User.findByPk(document.ownerId, { transaction });
+            // 6e. Envia E-mails de Conclusão (Com Template Customizável)
             
-            // Notifica Dono
+            // 1. Busca Configurações do Tenant para ver se tem template
+            const tenantSettings = await TenantSettings.findOne({ 
+                where: { tenantId: document.tenantId },
+                transaction 
+            });
+
+            // 2. Prepara dados para link de download
+            const owner = await User.findByPk(document.ownerId, { transaction });
+            const { url: downloadUrl } = await documentService.getDocumentDownloadUrl(document.id, owner); // Usando owner como proxy de auth
+
+            // 3. Define o Template (Customizado ou Padrão)
+            let emailBodyTemplate = tenantSettings?.finalEmailTemplate;
+
+            if (!emailBodyTemplate) {
+                // Template Padrão (Fallback)
+                emailBodyTemplate = `
+                    <div style="font-family: sans-serif; color: #333; max-width: 600px; margin: 0 auto;">
+                        <h2 style="color: #2563EB;">Documento Finalizado</h2>
+                        <p>Olá, <strong>{{signer_name}}</strong>.</p>
+                        <p>O processo de assinatura do documento <strong>{{doc_title}}</strong> foi concluído por todas as partes.</p>
+                        <p>O documento possui validade jurídica e integridade garantida.</p>
+                        <p style="margin: 30px 0;">
+                            <a href="{{doc_link}}" style="background-color: #10B981; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; font-weight: bold; display: inline-block;">
+                                Baixar Documento Assinado
+                            </a>
+                        </p>
+                        <p><small style="color: #666;">ID do Documento: {{doc_id}}</small></p>
+                    </div>
+                `;
+            }
+
+            // 4. Compilação Parcial (variáveis comuns)
+            let compiledBase = emailBodyTemplate
+                .replace(/{{doc_title}}/g, document.title)
+                .replace(/{{doc_link}}/g, downloadUrl)
+                .replace(/{{doc_id}}/g, document.id);
+
+            // 5. Envio para o Dono
             if (owner) {
+                const ownerHtml = compiledBase.replace(/{{signer_name}}/g, owner.name);
                 notificationService.sendEmail(document.tenantId, {
                     to: owner.email,
                     subject: `Documento Finalizado: ${document.title}`,
-                    html: `
-                        <div style="font-family: sans-serif;">
-                            <h3>Processo Concluído</h3>
-                            <p>O documento <strong>${document.title}</strong> foi assinado por todas as partes.</p>
-                            <p>Acesse a plataforma para baixar a versão final assinada.</p>
-                        </div>
-                    `
+                    html: ownerHtml
                 }).catch(err => console.error("Erro ao notificar dono:", err.message));
             }
             
-            // Notifica Signatários
+            // 6. Envio para Signatários
             signersInDoc.forEach(s => {
                  if (s.email) {
+                    const signerHtml = compiledBase.replace(/{{signer_name}}/g, s.name);
+                    
                     notificationService.sendEmail(document.tenantId, {
                         to: s.email,
                         subject: `Cópia do Documento Assinado: ${document.title}`,
-                        html: `
-                            <div style="font-family: sans-serif;">
-                                <h3>Olá, ${s.name}</h3>
-                                <p>O processo de assinatura do documento <strong>${document.title}</strong> foi concluído.</p>
-                                <p>O documento possui validade jurídica e integridade garantida.</p>
-                            </div>
-                        `
+                        html: signerHtml
                     }).catch(err => console.error(`Erro ao notificar signatário ${s.email}:`, err.message));
                  }
             });

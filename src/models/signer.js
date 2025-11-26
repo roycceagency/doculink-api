@@ -4,16 +4,11 @@ const { Model } = require('sequelize');
 
 module.exports = (sequelize, DataTypes) => {
   class Signer extends Model {
-    /**
-     * Helper method for defining associations.
-     * This method is not a part of Sequelize lifecycle.
-     * The `models/index` file will call this method automatically.
-     */
     static associate(models) {
-      // Um Signatário pertence a um Documento (esta associação agora é opcional)
+      // Um Signatário pertence a um Documento
       Signer.belongsTo(models.Document, { foreignKey: 'documentId' });
       
-      // Um Signatário pode ter múltiplos tokens de compartilhamento (ShareToken)
+      // Um Signatário pode ter múltiplos tokens de compartilhamento
       Signer.hasMany(models.ShareToken, { foreignKey: 'signerId' });
     }
   }
@@ -26,9 +21,9 @@ module.exports = (sequelize, DataTypes) => {
     },
     documentId: {
       type: DataTypes.UUID,
-      allowNull: true, // <-- CORREÇÃO: Permite que seja nulo para funcionar como "contato"
+      allowNull: true, 
       references: { 
-        model: 'Documents', // Nome da tabela
+        model: 'Documents', 
         key: 'id' 
       }
     },
@@ -43,20 +38,20 @@ module.exports = (sequelize, DataTypes) => {
     },
     cpf: {
       type: DataTypes.STRING,
-      allowNull: true, // CPF pode ser nulo inicialmente e preenchido no fluxo de assinatura
+      allowNull: true, 
     },
     phoneWhatsE164: {
       type: DataTypes.STRING,
-      allowNull: true, // Telefone também pode ser opcional ao criar um contato
+      allowNull: true, 
     },
     qualification: {
       type: DataTypes.STRING,
-      allowNull: true, // Qualificação (Advogado, etc.) é opcional
+      allowNull: true, 
     },
     authChannels: {
       type: DataTypes.ARRAY(DataTypes.ENUM('EMAIL', 'SMS', 'WHATSAPP')),
       allowNull: false,
-      defaultValue: ['EMAIL', 'WHATSAPP'], // <-- CORREÇÃO: Adiciona um valor padrão
+      defaultValue: ['EMAIL', 'WHATSAPP'], 
     },
     order: {
       type: DataTypes.INTEGER,
@@ -78,6 +73,19 @@ module.exports = (sequelize, DataTypes) => {
       type: DataTypes.DATE,
       allowNull: true,
     },
+    // --- NOVOS CAMPOS PARA O CARIMBO VISUAL ---
+    ip: {
+      type: DataTypes.STRING,
+      allowNull: true,
+      comment: 'Endereço IP utilizado no momento da assinatura'
+    },
+    signatureUuid: {
+      type: DataTypes.UUID,
+      defaultValue: DataTypes.UUIDV4, // Gera um ID único para a assinatura automaticamente se necessário
+      allowNull: true,
+      comment: 'ID único público da assinatura para exibição no PDF'
+    },
+    // ------------------------------------------
     signatureHash: {
       type: DataTypes.STRING(64),
       allowNull: true,
@@ -101,7 +109,7 @@ module.exports = (sequelize, DataTypes) => {
   }, {
     sequelize,
     modelName: 'Signer',
-    timestamps: false // Geralmente não precisamos de createdAt/updatedAt para o signatário do documento
+    timestamps: false 
   });
   return Signer;
 };
