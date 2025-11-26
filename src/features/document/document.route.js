@@ -6,8 +6,7 @@ const multer = require('multer');
 const path = require('path');
 const documentController = require('./document.controller');
 const authGuard = require('../../middlewares/authGuard');
-const roleGuard = require('../../middlewares/roleGuard'); // Middleware de permissões
-const folderController = require('./folder.controller');
+const roleGuard = require('../../middlewares/roleGuard');
 
 const router = Router();
 
@@ -23,31 +22,33 @@ const uploadMemory = multer({
   limits: { fileSize: 20 * 1024 * 1024 }
 });
 
-// --- ROTAS PÚBLICAS OU DE UTILIDADE GERAL ---
+// --- ROTAS PÚBLICAS / GERAIS (DEVEM VIR PRIMEIRO) ---
 
-// Validador de Arquivo (Upload do PDF para checar integridade e originalidade)
-// Pode ser público ou protegido dependendo da regra de negócio. Aqui deixamos sem authGuard para validação externa.
+// Validador de Arquivo (Upload do PDF para checar integridade)
 router.post('/validate-file', uploadMemory.single('file'), documentController.validateFile);
 
 
-// --- ROTAS PROTEGIDAS (REQUER LOGIN) ---
+// --- INÍCIO DAS ROTAS PROTEGIDAS ---
 router.use(authGuard);
 
 
-// Rotas de Pastas (Devem vir ANTES de /:id para não confundir)
-router.get('/folders', roleGuard(['ADMIN', 'MANAGER', 'VIEWER']), folderController.list);
-router.post('/folders', roleGuard(['ADMIN', 'MANAGER']), folderController.create);
-router.post('/folders/move', roleGuard(['ADMIN', 'MANAGER']), folderController.move);
-router.delete('/folders/:id', roleGuard(['ADMIN', 'MANAGER']), folderController.remove);
+// --- ROTAS DE LISTAGEM E ESTATÍSTICAS (DEVEM VIR ANTES DE ROTAS COM :id) ---
+
+// Estatísticas do dashboard (CRÍTICO: Deve vir antes de /:id para não ser confundido com um UUID)
+router.get('/stats', roleGuard(['ADMIN', 'MANAGER', 'VIEWER']), documentController.getStats);
+
+// Listar todos os documentos do tenant
+router.get('/', roleGuard(['ADMIN', 'MANAGER', 'VIEWER']), documentController.getAllDocuments);
+
+// Criar novo documento (Upload)
+router.post('/', roleGuard(['ADMIN', 'MANAGER']), uploadTemp.single('documentFile'), documentController.createDocument);
 
 
-// --- ROTAS DE LEITURA (Acessíveis por ADMIN, MANAGER e VIEWER) ---
+// --- ROTAS ESPECÍFICAS POR ID (:id) ---
+// O Express lê de cima para baixo. Tudo que tiver :id deve ficar por último.
 
 // Verificar Cadeia de Custódia (Hash Chain)
 router.get('/:id/verify-chain', roleGuard(['ADMIN', 'MANAGER', 'VIEWER']), documentController.verifyChain);
-
-// Obter detalhes de um documento
-router.get('/:id', roleGuard(['ADMIN', 'MANAGER', 'VIEWER']), documentController.getDocumentById);
 
 // Obter trilha de auditoria
 router.get('/:id/audit', roleGuard(['ADMIN', 'MANAGER', 'VIEWER']), documentController.getDocumentAuditTrail);
@@ -55,23 +56,8 @@ router.get('/:id/audit', roleGuard(['ADMIN', 'MANAGER', 'VIEWER']), documentCont
 // Download do arquivo
 router.get('/:id/download', roleGuard(['ADMIN', 'MANAGER', 'VIEWER']), documentController.downloadDocumentFile);
 
-// Listar todos os documentos do tenant
-router.get('/', roleGuard(['ADMIN', 'MANAGER', 'VIEWER']), documentController.getAllDocuments);
-
-// Estatísticas do dashboard
-router.get('/stats', roleGuard(['ADMIN', 'MANAGER', 'VIEWER']), documentController.getStats); // Nota: Cuidar com a ordem, se 'stats' fosse param, daria conflito, mas aqui está ok pois :id valida UUID geralmente ou a ordem no express resolve se não bater. Para segurança, coloque rotas estáticas antes de /:id se possível, mas aqui stats é query param ou rota distinta dependendo da implementação do controller. (No código anterior, stats era rota fixa).
-
-
-// --- ROTAS DE ESCRITA/AÇÃO (Acessíveis apenas por ADMIN e MANAGER) ---
-
-// Criar novo documento (Upload)
-router.post('/', roleGuard(['ADMIN', 'MANAGER']), uploadTemp.single('documentFile'), documentController.createDocument);
-
 // Convidar signatários
 router.post('/:id/invite', roleGuard(['ADMIN', 'MANAGER']), documentController.inviteSigners);
-
-// Atualizar metadados (título, prazo)
-router.patch('/:id', roleGuard(['ADMIN', 'MANAGER']), documentController.updateDocument);
 
 // Cancelar documento
 router.post('/:id/cancel', roleGuard(['ADMIN', 'MANAGER']), documentController.cancelDocument);
@@ -79,10 +65,13 @@ router.post('/:id/cancel', roleGuard(['ADMIN', 'MANAGER']), documentController.c
 // Marcar como expirado (manual)
 router.post('/:id/expire', roleGuard(['ADMIN', 'MANAGER']), documentController.expireDocument);
 
-// Aplicar assinatura digital PAdES (se configurado)
+// Aplicar assinatura digital PAdES
 router.post('/:id/pades', roleGuard(['ADMIN', 'MANAGER']), documentController.applyPades);
 
+// Atualizar metadados (título, prazo)
+router.patch('/:id', roleGuard(['ADMIN', 'MANAGER']), documentController.updateDocument);
 
-
+// Obter detalhes de um documento (GET /:id deve ser a última rota GET para não capturar outras rotas)
+router.get('/:id', roleGuard(['ADMIN', 'MANAGER', 'VIEWER']), documentController.getDocumentById);
 
 module.exports = router;
