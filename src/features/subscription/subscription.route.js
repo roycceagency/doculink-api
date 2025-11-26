@@ -20,6 +20,9 @@ router.post('/', roleGuard(['ADMIN', 'SUPER_ADMIN']), controller.createSubscript
 // Apenas ADMIN ou SUPER_ADMIN podem cancelar
 router.delete('/', roleGuard(['ADMIN', 'SUPER_ADMIN']), controller.cancel);
 
+router.get('/plans', roleGuard(['ADMIN', 'SUPER_ADMIN']), controller.listPlans);
+
+
 router.put('/plans/:id', roleGuard(['SUPER_ADMIN']), controller.updatePlan);
 
 

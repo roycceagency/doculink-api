@@ -52,4 +52,13 @@ const updatePlan = async (req, res, next) => {
     }
 };
 
-module.exports = { createSubscription, cancel, updatePlan};
+const listPlans = async (req, res, next) => {
+  try {
+    const plans = await Plan.findAll({ order: [['price', 'ASC']] });
+    res.status(200).json(plans);
+  } catch (error) {
+    next(error);
+  }
+};
+
+module.exports = { createSubscription, cancel, updatePlan, listPlans};
