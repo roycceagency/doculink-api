@@ -4,8 +4,8 @@
 const fs = require('fs/promises');
 const path = require('path');
 const crypto = require('crypto');
-const { Op } = require('sequelize');
-const { Document, Signer, ShareToken, AuditLog, User, Certificate, Tenant, Plan, sequelize } = require('../../models'); 
+const { Op } = require('sequelize');  
+const { Document, Signer, ShareToken, AuditLog, Certificate, Tenant, Plan, User, Folder,sequelize } = require('../../models'); 
 
 // Serviços externos
 const notificationService = require('../../services/notification.service');
@@ -405,7 +405,7 @@ const changeDocumentStatus = async (docId, newStatus, user) => {
  */
 const findAllDocuments = async (user, status) => {
     const whereClause = {
-        tenantId: user.tenantId, // Filtra pelo contexto do token
+        tenantId: user.tenantId,
     };
 
     const statusMap = {
@@ -425,7 +425,15 @@ const findAllDocuments = async (user, status) => {
         order: [['createdAt', 'DESC']],
         include: [
             { model: Signer, as: 'Signers' },
-            { model: User, as: 'owner', attributes: ['name'] } // Inclui nome do criador
+            { model: User, as: 'owner', attributes: ['name'] },
+            // --- ADICIONE ISTO ---
+            { 
+                model: Folder, 
+                as: 'folder', 
+                attributes: ['id', 'name'],
+                required: false // Left Join (traz mesmo se for null/raiz)
+            }
+            // --------------------
         ]
     });
 };
