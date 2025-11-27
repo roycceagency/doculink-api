@@ -19,6 +19,7 @@ const generateSlug = (name) => {
 
 /**
  * Cria um novo Tenant e o primeiro usuário Admin.
+ * Geralmente usado pelo Super Admin.
  */
 const createTenantWithAdmin = async (tenantName, adminUserData) => {
   const transaction = await sequelize.transaction();
@@ -30,6 +31,8 @@ const createTenantWithAdmin = async (tenantName, adminUserData) => {
       slug = `${slug}-${Math.random().toString(36).substring(2, 7)}`;
     }
 
+    // Define um plano padrão (ex: Básico) para tenants criados manualmente pelo Super Admin.
+    // Para registro público (via site), a lógica fica no auth.service (Plano Gratuito).
     const basicPlan = await Plan.findOne({ where: { slug: 'basico' }, transaction });
 
     const tenant = await Tenant.create({
@@ -147,21 +150,28 @@ const listMyTenants = async (userId) => {
 
 /**
  * Convida um usuário por e-mail para o Tenant atual.
+ * Verifica limites do plano e status da assinatura.
  */
 const inviteMember = async (currentTenantId, email, role = 'VIEWER') => {
   const tenant = await Tenant.findByPk(currentTenantId, { include: [{ model: Plan, as: 'plan' }] });
   
   if (!tenant) throw new Error('Organização não encontrada.');
 
-  if (tenant.subscriptionStatus && ['OVERDUE', 'CANCELED'].includes(tenant.subscriptionStatus)) {
-      throw new Error('Sua assinatura está irregular. Regularize o pagamento para convidar novos membros.');
+  // --- TRAVA DE PAGAMENTO (IGNORA SE FOR PLANO GRATUITO) ---
+  if (tenant.plan && parseFloat(tenant.plan.price) > 0) {
+      if (tenant.subscriptionStatus && ['OVERDUE', 'CANCELED'].includes(tenant.subscriptionStatus)) {
+          throw new Error('Sua assinatura está irregular. Regularize o pagamento para convidar novos membros.');
+      }
   }
 
+  // --- TRAVA DE LIMITE DE USUÁRIOS DO PLANO ---
   if (tenant.plan) {
+    // Conta donos (geralmente 1)
     const ownerCount = await User.count({ 
         where: { tenantId: currentTenantId, status: 'ACTIVE' } 
     });
     
+    // Conta membros ativos e pendentes (exceto recusados)
     const memberCount = await TenantMember.count({ 
       where: { 
         tenantId: currentTenantId, 
@@ -172,21 +182,21 @@ const inviteMember = async (currentTenantId, email, role = 'VIEWER') => {
     const totalUsers = ownerCount + memberCount;
 
     if (totalUsers >= tenant.plan.userLimit) {
-      throw new Error(`Limite de usuários do plano atingido (${tenant.plan.userLimit}). Faça upgrade para adicionar mais pessoas.`);
+      throw new Error(`Limite de usuários do plano atingido (${totalUsers}/${tenant.plan.userLimit}). Faça upgrade para adicionar mais pessoas.`);
     }
   }
+  // --------------------------------------------------------
 
-  // --- CORREÇÃO AQUI: VALIDAÇÃO DE EXISTÊNCIA ---
-  // Verifica se o usuário existe no sistema global
+  // Verifica se o usuário já existe na plataforma globalmente
   const existingUser = await User.findOne({ where: { email } });
 
   if (!existingUser) {
-      // Se a regra de negócio exige que o usuário já tenha conta:
-      throw new Error('Este e-mail não corresponde a nenhuma conta registrada no Doculink. O usuário precisa se cadastrar primeiro.');
+      // Regra de negócio: O usuário deve se cadastrar primeiro ou o sistema deve permitir criar conta "shadow".
+      // Aqui assumimos que ele deve existir.
+      throw new Error('Este e-mail não corresponde a nenhuma conta registrada no Doculink. O usuário precisa se cadastrar na plataforma primeiro.');
   }
-  // ---------------------------------------------
 
-  // Verifica se já é membro
+  // Verifica se já é membro desta equipe
   const existingMember = await TenantMember.findOne({
       where: { tenantId: currentTenantId, email }
   });
@@ -199,21 +209,23 @@ const inviteMember = async (currentTenantId, email, role = 'VIEWER') => {
   const [member, created] = await TenantMember.findOrCreate({
     where: { tenantId: currentTenantId, email },
     defaults: {
-      userId: existingUser.id, // Já vincula o ID pois sabemos que existe
+      userId: existingUser.id,
       role,
       status: 'PENDING'
     }
   });
 
+  // Se já existia (ex: recusado ou pendente antigo), reativa/atualiza
   if (!created) {
     member.status = 'PENDING';
     member.userId = existingUser.id;
     member.role = role;
+    member.invitedAt = new Date(); // Atualiza data do convite
     await member.save();
   }
 
-  // Envia Notificação
-  const inviteLink = `${process.env.FRONT_URL}/onboarding`;
+  // Envia Notificação por E-mail
+  const inviteLink = `${process.env.FRONT_URL}/onboarding`; // Link para o usuário ver os convites no front
 
   try {
       await notificationService.sendEmail(currentTenantId, {
@@ -222,12 +234,14 @@ const inviteMember = async (currentTenantId, email, role = 'VIEWER') => {
           html: `
             <div style="font-family: sans-serif; color: #333;">
                 <h2>Olá, ${existingUser.name}!</h2>
-                <p>Você foi convidado para fazer parte da equipe <strong>${tenant.name}</strong>.</p>
+                <p>Você foi convidado para fazer parte da equipe <strong>${tenant.name}</strong> no Doculink.</p>
+                <p>Nível de acesso: <strong>${role}</strong></p>
                 <p style="margin: 20px 0;">
                     <a href="${inviteLink}" style="background-color: #2563EB; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; font-weight: bold;">
                         Ver Convite
                     </a>
                 </p>
+                <p><small>Se você não esperava este convite, pode ignorar este e-mail.</small></p>
             </div>
           `
       });
@@ -264,11 +278,14 @@ const respondToInvite = async (userId, inviteId, accept) => {
     throw new Error('Convite não encontrado.');
   }
   
+  // Valida se o convite pertence ao usuário logado
   if (invite.userId !== userId) {
+      // Fallback: verifica por e-mail se o userId estava nulo
       const user = await User.findByPk(userId);
       if (user.email !== invite.email) {
           throw new Error('Este convite não pertence a você.');
       }
+      // Vincula o ID agora
       invite.userId = userId;
   }
 

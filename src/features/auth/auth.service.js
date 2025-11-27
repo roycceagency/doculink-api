@@ -60,14 +60,10 @@ const saveSession = async (userId, refreshToken) => {
 const registerUser = async (userData, { ip, userAgent } = {}) => {
   const { name, email, password, cpf, phone } = userData;
 
-  if (!password || password.length < 6) {
-    throw new Error('A senha deve ter no mínimo 6 caracteres.');
-  }
+  if (!password || password.length < 6) throw new Error('A senha deve ter no mínimo 6 caracteres.');
 
   const existingUser = await User.scope('withPassword').findOne({ where: { email } });
-  if (existingUser) {
-    throw new Error('Este e-mail já está em uso.');
-  }
+  if (existingUser) throw new Error('Este e-mail já está em uso.');
 
   const passwordHash = await bcrypt.hash(password, 10);
   
@@ -75,12 +71,16 @@ const registerUser = async (userData, { ip, userAgent } = {}) => {
   try {
     let slug = generateSlug(`${name}'s Org`);
     
+    // --- ALTERAÇÃO: Busca o plano GRATUITO para novos usuários ---
+    const freePlan = await Plan.findOne({ where: { slug: 'gratuito' }, transaction });
+    // -------------------------------------------------------------
+
     // 1. Cria o Tenant Pessoal
     const newTenant = await Tenant.create({ 
         name: `${name}`, 
         slug,
-        status: 'ACTIVE' 
-        // PlanId será null ou setado via seed depois/hook
+        status: 'ACTIVE',
+        planId: freePlan ? freePlan.id : null // Começa no plano gratuito
     }, { transaction });
 
     // 2. Cria o Usuário (Dono)
@@ -90,16 +90,12 @@ const registerUser = async (userData, { ip, userAgent } = {}) => {
       passwordHash,
       cpf,
       phoneWhatsE164: phone,
-      tenantId: newTenant.id, // Tenant Pessoal
-      role: 'ADMIN',          // Quem se cadastra é Admin do próprio tenant
+      tenantId: newTenant.id,
+      role: 'ADMIN',
       status: 'ACTIVE'
     }, { transaction });
     
-    // 3. Verifica se havia convites pendentes para este email e atualiza o userId
-    await TenantMember.update(
-      { userId: newUser.id },
-      { where: { email: email }, transaction }
-    );
+    await TenantMember.update({ userId: newUser.id }, { where: { email: email }, transaction });
 
     await auditService.createEntry({
         tenantId: newTenant.id,
@@ -110,12 +106,11 @@ const registerUser = async (userData, { ip, userAgent } = {}) => {
         action: 'USER_CREATED',
         ip: ip || '0.0.0.0',
         userAgent: userAgent || 'System',
-        payload: { email }
+        payload: { email, plan: 'gratuito' }
     }, transaction);
 
     await transaction.commit();
 
-    // Gera tokens para o tenant pessoal
     const { accessToken, refreshToken } = generateTokens(newUser, newTenant.id, 'ADMIN');
     await saveSession(newUser.id, refreshToken);
     

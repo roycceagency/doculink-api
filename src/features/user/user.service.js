@@ -1,16 +1,10 @@
 // src/features/user/user.service.js
 'use strict';
 
-const { User } = require('../../models');
+const { User, Tenant, Plan, TenantMember } = require('../../models');
 const bcrypt = require('bcrypt');
-const { Op } = require('sequelize'); // Importar o Op para queries
+const { Op } = require('sequelize');
 
-/**
- * Atualiza os dados de perfil de um usuário (apenas campos permitidos).
- * @param {string} userId - O ID do usuário a ser atualizado.
- * @param {object} updateData - Os dados a serem atualizados (ex: { name, phoneWhatsE164 }).
- * @returns {Promise<User>} - A instância do usuário atualizado.
- */
 const updateUser = async (userId, updateData) => {
   const user = await User.findByPk(userId);
   if (!user) {
@@ -19,7 +13,6 @@ const updateUser = async (userId, updateData) => {
     throw error;
   }
 
-  // Define uma lista de campos que o usuário tem permissão para atualizar nesta rota.
   const allowedUpdates = ['name', 'phoneWhatsE164'];
   const validUpdates = {};
 
@@ -33,21 +26,10 @@ const updateUser = async (userId, updateData) => {
   return user;
 };
 
-/**
- * Altera a senha de um usuário após validar sua senha atual.
- * @param {User} user - O objeto do usuário autenticado (do authGuard).
- * @param {string} currentPassword - A senha atual para verificação.
- * @param {string} newPassword - A nova senha a ser definida.
- */
 const changeUserPassword = async (user, currentPassword, newPassword) => {
   const userWithPassword = await User.scope('withPassword').findByPk(user.id);
-  if (!userWithPassword) {
-    throw new Error('Usuário não encontrado.');
-  }
-  
-  if (!userWithPassword.passwordHash) {
-    throw new Error('Conta configurada incorretamente, sem hash de senha.');
-  }
+  if (!userWithPassword) throw new Error('Usuário não encontrado.');
+  if (!userWithPassword.passwordHash) throw new Error('Conta configurada incorretamente, sem hash de senha.');
 
   const isMatch = await bcrypt.compare(currentPassword, userWithPassword.passwordHash);
   if (!isMatch) {
@@ -66,23 +48,12 @@ const changeUserPassword = async (user, currentPassword, newPassword) => {
   await userWithPassword.save();
 };
 
-
-// --- FUNÇÕES DE ADMINISTRAÇÃO (ADICIONADAS AQUI) ---
-
-/**
- * Lista todos os usuários de um determinado Tenant.
- * @param {string} tenantId - O ID do tenant.
- * @returns {Promise<User[]>}
- */
 const listUsersByTenant = async (tenantId) => {
   return User.findAll({ where: { tenantId } });
 };
 
 /**
- * Cria um novo usuário (por um administrador).
- * @param {User} adminUser - O usuário admin que está executando a ação.
- * @param {object} newUserDto - Dados do novo usuário { name, email, password, role }.
- * @returns {Promise<User>}
+ * Cria um novo usuário (por um administrador) com validação de plano.
  */
 const createUserByAdmin = async (adminUser, newUserDto) => {
   const { name, email, password, role } = newUserDto;
@@ -93,10 +64,37 @@ const createUserByAdmin = async (adminUser, newUserDto) => {
     throw error;
   }
 
+  // --- TRAVA DE PLANO: VERIFICA LIMITE DE USUÁRIOS ---
+  const tenant = await Tenant.findByPk(adminUser.tenantId, {
+      include: [{ model: Plan, as: 'plan' }]
+  });
+
+  if (!tenant) throw new Error('Organização não encontrada.');
+
+  // Verifica Pagamento (se não for gratuito)
+  if (tenant.plan && parseFloat(tenant.plan.price) > 0) {
+      if (tenant.subscriptionStatus && ['OVERDUE', 'CANCELED'].includes(tenant.subscriptionStatus)) {
+          throw new Error('Sua assinatura está irregular. Regularize para adicionar usuários.');
+      }
+  }
+
+  if (tenant.plan) {
+      const ownerCount = await User.count({ where: { tenantId: adminUser.tenantId, status: 'ACTIVE' } });
+      const memberCount = await TenantMember.count({ where: { tenantId: adminUser.tenantId, status: { [Op.ne]: 'DECLINED' } } });
+      const totalUsers = ownerCount + memberCount;
+
+      if (totalUsers >= tenant.plan.userLimit) {
+          const error = new Error(`Limite de usuários do plano atingido (${tenant.plan.userLimit}). Faça upgrade.`);
+          error.statusCode = 403;
+          throw error;
+      }
+  }
+  // ---------------------------------------------------
+
   const existingUser = await User.findOne({ where: { email } });
   if (existingUser) {
     const error = new Error('O e-mail fornecido já está em uso.');
-    error.statusCode = 409; // Conflict
+    error.statusCode = 409; 
     throw error;
   }
 
@@ -106,21 +104,14 @@ const createUserByAdmin = async (adminUser, newUserDto) => {
     name,
     email,
     passwordHash,
-    role: role || 'USER', // Padrão é 'USER' se não for especificado
-    tenantId: adminUser.tenantId, // Novo usuário pertence ao mesmo tenant do admin
+    role: role || 'USER', 
+    tenantId: adminUser.tenantId, 
     status: 'ACTIVE'
   });
 
   return newUser;
 };
 
-/**
- * Atualiza os dados de um usuário (por um administrador).
- * @param {User} adminUser - O usuário admin que está executando a ação.
- * @param {string} targetUserId - ID do usuário a ser atualizado.
- * @param {object} updateData - Dados a serem atualizados { name, role, status }.
- * @returns {Promise<User>}
- */
 const updateUserByAdmin = async (adminUser, targetUserId, updateData) => {
   const userToUpdate = await User.findOne({
     where: { id: targetUserId, tenantId: adminUser.tenantId }
@@ -144,11 +135,6 @@ const updateUserByAdmin = async (adminUser, targetUserId, updateData) => {
   return userToUpdate;
 };
 
-/**
- * Deleta um usuário (por um administrador).
- * @param {User} adminUser - O usuário admin que está executando a ação.
- * @param {string} targetUserId - ID do usuário a ser deletado.
- */
 const deleteUserByAdmin = async (adminUser, targetUserId) => {
   if (adminUser.id === targetUserId) {
     const error = new Error('Um administrador não pode deletar a própria conta.');
@@ -169,12 +155,9 @@ const deleteUserByAdmin = async (adminUser, targetUserId) => {
   await userToDelete.destroy();
 };
 
-
-// --- EXPORTAÇÃO DE TODAS AS FUNÇÕES ---
 module.exports = {
   updateUser,
   changeUserPassword,
-  // Adiciona as novas funções à exportação
   listUsersByTenant,
   createUserByAdmin,
   updateUserByAdmin,

@@ -2,10 +2,11 @@
 'use strict';
 
 const fs = require('fs/promises');
+const fsSync = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { Op } = require('sequelize');  
-const { Document, Signer, ShareToken, AuditLog, Certificate, Tenant, Plan, User, Folder,sequelize } = require('../../models'); 
+const { Document, Signer, ShareToken, AuditLog, Certificate, Tenant, Plan, User, Folder, TenantSettings, sequelize } = require('../../models'); 
 
 // Serviços externos
 const notificationService = require('../../services/notification.service');
@@ -36,9 +37,9 @@ const saveSignatureImage = async (base64Image, tenantId, signerId) => {
 /**
  * Cria um registro de documento, lida com o upload do arquivo, calcula seu hash
  * e cria o primeiro evento de auditoria.
+ * Inclui validações de Limite de Plano e Status de Pagamento.
  */
 const createDocumentAndHandleUpload = async ({ file, title, deadlineAt, folderId, user }) => {
-  // --- INÍCIO DA TRAVA DE LIMITE E VALIDAÇÃO ---
   
   // 1. Busca dados do Tenant e do Plano atual
   const tenant = await Tenant.findByPk(user.tenantId, {
@@ -47,10 +48,13 @@ const createDocumentAndHandleUpload = async ({ file, title, deadlineAt, folderId
 
   if (!tenant) throw new Error('Organização não encontrada.');
 
-  // 2. Verifica status da assinatura (se não for plano gratuito/básico)
-  // Bloqueia criação se o pagamento estiver atrasado ou cancelado
-  if (tenant.subscriptionStatus && ['OVERDUE', 'CANCELED'].includes(tenant.subscriptionStatus)) {
-      throw new Error('Sua assinatura está pendente ou cancelada. Regularize para criar novos documentos.');
+  // --- TRAVA DE PLANO / ASSINATURA ---
+  // Se o plano tiver preço > 0 (Básico, Pro, Empresa), valida o status do pagamento.
+  // Se for Gratuito (price == 0), ignora status da assinatura (pois não existe no Asaas).
+  if (tenant.plan && parseFloat(tenant.plan.price) > 0) {
+      if (tenant.subscriptionStatus && ['OVERDUE', 'CANCELED'].includes(tenant.subscriptionStatus)) {
+          throw new Error('Sua assinatura está pendente ou cancelada. Regularize para criar novos documentos.');
+      }
   }
 
   // 3. Verifica quantidade atual vs Limite do Plano
@@ -58,7 +62,7 @@ const createDocumentAndHandleUpload = async ({ file, title, deadlineAt, folderId
       const currentCount = await Document.count({ where: { tenantId: user.tenantId } });
       
       if (currentCount >= tenant.plan.documentLimit) {
-          const error = new Error(`Limite de documentos atingido (${tenant.plan.documentLimit}). Faça upgrade do plano.`);
+          const error = new Error(`Limite de documentos atingido (${currentCount}/${tenant.plan.documentLimit}). Faça upgrade do plano.`);
           error.statusCode = 403; // Forbidden
           throw error;
       }
@@ -71,7 +75,7 @@ const createDocumentAndHandleUpload = async ({ file, title, deadlineAt, folderId
     const doc = await Document.create({
       tenantId: user.tenantId,
       ownerId: user.id,
-      folderId: folderId || null, // <--- VINCULA À PASTA (ou Raiz se null)
+      folderId: folderId || null, // Vincula à pasta ou Raiz
       title: title || file.originalname,
       deadlineAt,
       mimeType: file.mimetype,
@@ -95,7 +99,6 @@ const createDocumentAndHandleUpload = async ({ file, title, deadlineAt, folderId
     const sha256 = crypto.createHash('sha256').update(fileBuffer).digest('hex');
 
     // 8. Atualiza o documento com o caminho final e o hash
-    // Salva o caminho relativo para ser portável
     doc.storageKey = path.relative(path.join(__dirname, '..', '..', '..'), permanentPath);
     doc.sha256 = sha256;
     doc.status = 'READY'; // Agora está pronto para assinaturas
@@ -109,7 +112,7 @@ const createDocumentAndHandleUpload = async ({ file, title, deadlineAt, folderId
       entityType: 'DOCUMENT',
       entityId: doc.id,
       action: 'STORAGE_UPLOADED',
-      ip: 'SYSTEM', // Upload inicial geralmente não captura IP do cliente no service, mas pode ser passado se necessário
+      ip: 'SYSTEM', // Upload inicial via API interna
       userAgent: 'SYSTEM',
       payload: { fileName: file.originalname, sha256 }
     }, transaction);
@@ -159,12 +162,10 @@ const validatePdfIntegrity = async (fileBuffer) => {
   });
 
   // 3. Regra Estrita: Só é válido se existir E estiver ASSINADO (SIGNED)
-  // Qualquer outra coisa (Rascunho, Pendente, Não encontrado) é inválido para fins de prova.
-  
   if (!doc || doc.status !== 'SIGNED') {
     return { 
         valid: false, 
-        hashCalculated: hash, // Retorna o hash calculado para mostrar que não bateu ou não é válido
+        hashCalculated: hash, 
         reason: !doc ? 'NOT_FOUND' : 'NOT_SIGNED'
     };
   }
@@ -175,7 +176,7 @@ const validatePdfIntegrity = async (fileBuffer) => {
     hashCalculated: hash,
     document: {
       title: doc.title,
-      signedAt: doc.updatedAt, // Data da finalização
+      signedAt: doc.updatedAt,
       ownerName: doc.owner.name,
       signers: doc.Signers
     }
@@ -276,7 +277,7 @@ const updateDocumentDetails = async (docId, updates, user) => {
  */
 const getDocumentFilePath = async (docId, user) => {
     const document = await Document.findOne({
-      where: { id: docId, tenantId: user.tenantId } // Garante acesso pelo tenant
+      where: { id: docId, tenantId: user.tenantId }
     });
 
     if (!document || !document.storageKey) {
@@ -299,6 +300,7 @@ const getDocumentDownloadUrl = async (docId, user) => {
         throw new Error('Documento não encontrado ou acesso negado.');
     }
     
+    // Supondo que a pasta 'uploads' é servida estaticamente em /uploads
     const fileUrl = `${process.env.API_BASE_URL}/${document.storageKey}`;
     return { url: fileUrl };
 };
@@ -368,7 +370,6 @@ const findAuditTrail = async (docId, user) => {
     const signers = await Signer.findAll({ where: { documentId: docId }, attributes: ['id'] });
     const signerIds = signers.map(s => s.id);
 
-    // Retorna logs crus para a API (o auditService.listLogs é para o painel geral)
     return AuditLog.findAll({
         where: {
             [Op.or]: [
@@ -381,7 +382,7 @@ const findAuditTrail = async (docId, user) => {
 };
 
 /**
- * Altera o status de um documento.
+ * Altera o status de um documento (Cancelado, Expirado).
  */
 const changeDocumentStatus = async (docId, newStatus, user) => {
   const transaction = await sequelize.transaction();
@@ -438,14 +439,12 @@ const findAllDocuments = async (user, status) => {
         include: [
             { model: Signer, as: 'Signers' },
             { model: User, as: 'owner', attributes: ['name'] },
-            // --- ADICIONE ISTO ---
             { 
                 model: Folder, 
                 as: 'folder', 
                 attributes: ['id', 'name'],
-                required: false // Left Join (traz mesmo se for null/raiz)
+                required: false // Left Join
             }
-            // --------------------
         ]
     });
 };
@@ -466,7 +465,6 @@ const getDocumentStats = async (user) => {
   ]);
 
   // 2. Cálculo de Armazenamento Utilizado (Soma do campo size)
-  // O resultado pode vir null se não houver docs, então tratamos com || 0
   const storageSum = await Document.sum('size', { 
     where: { tenantId, status: { [Op.ne]: 'CANCELLED' } } 
   });
@@ -507,7 +505,7 @@ const getDocumentStats = async (user) => {
 
 /**
  * Aplica a assinatura PAdES (Digital) ao documento.
- * Normalmente chamado após todos os signatários assinarem visualmente ou sob demanda.
+ * Processo final que sela o documento com certificado A1 e gera logs finais.
  */
 const finalizeWithPades = async (docId, user) => {
     const transaction = await sequelize.transaction();
@@ -521,11 +519,16 @@ const finalizeWithPades = async (docId, user) => {
         
         if (!document) throw new Error('Documento não encontrado.');
 
-        // 2. Lê o arquivo atual (pode já ter assinaturas visuais)
+        // 2. Lê o arquivo atual (pode já ter assinaturas visuais ou não)
         const filePath = path.join(__dirname, '..', '..', '..', document.storageKey);
+        
+        if (!fsSync.existsSync(filePath)) {
+            throw new Error(`Arquivo físico não encontrado: ${filePath}`);
+        }
+        
         const fileBuffer = await fs.readFile(filePath);
 
-        // 3. Prepara dados para carimbos visuais (se necessário reutilizar lógica de visual)
+        // 3. Prepara dados para carimbos visuais (posicionamento capturado no front)
         const signersData = document.Signers.map(s => ({
             name: s.name,
             signedAt: s.signedAt,
@@ -536,19 +539,20 @@ const finalizeWithPades = async (docId, user) => {
         }));
 
         // 4. Aplica PAdES + Carimbos Visuais (Service PAdES)
-        // Nota: O padesService deve ser capaz de lidar com isso.
         const signedPdfBuffer = await padesService.applyPadesSignatureWithStamps(fileBuffer, signersData);
         
-        // 5. Salva novo arquivo
+        // 5. Salva novo arquivo (versão assinada)
+        // Substitui a extensão por -pades.pdf para diferenciar
         const newStorageKey = document.storageKey.replace(/(\.[\w\d_-]+)$/i, '-pades$1');
         const newPath = path.join(__dirname, '..', '..', '..', newStorageKey);
         await fs.writeFile(newPath, signedPdfBuffer);
 
-        // 6. Atualiza Hash e Caminho
+        // 6. Atualiza Hash e Caminho no Banco
         const newSha256 = crypto.createHash('sha256').update(signedPdfBuffer).digest('hex');
         document.storageKey = newStorageKey;
         document.sha256 = newSha256;
-        // Opcional: Atualizar status se já não estiver SIGNED
+        
+        // Garante que o status final é SIGNED
         if (document.status !== 'SIGNED') document.status = 'SIGNED';
         
         await document.save({ transaction });
@@ -566,11 +570,90 @@ const finalizeWithPades = async (docId, user) => {
             payload: { newSha256 }
         }, transaction);
 
+        // 8. Emite Certificado de Conclusão (Registro no Banco)
+        const timestampISO = new Date().toISOString();
+        const certificateSha256 = crypto.createHash('sha256').update(`CERT-${document.id}-${timestampISO}`).digest('hex');
+        
+        // Verifica se já existe para não duplicar
+        const existingCert = await Certificate.findOne({ where: { documentId: document.id }, transaction });
+        
+        if (!existingCert) {
+            await Certificate.create({
+                documentId: document.id,
+                storageKey: `certificates/${document.id}.pdf`, // Placeholder lógica futura de geração de PDF do certificado
+                sha256: certificateSha256,
+                issuedAt: new Date()
+            }, { transaction });
+
+            await auditService.createEntry({ 
+                tenantId: document.tenantId, 
+                actorKind: 'SYSTEM', 
+                entityType: 'DOCUMENT', 
+                entityId: document.id, 
+                action: 'CERTIFICATE_ISSUED'
+            }, transaction);
+        }
+
+        // 9. Envia E-mails de Conclusão (Com Template Customizável)
+        const tenantSettings = await TenantSettings.findOne({ 
+            where: { tenantId: document.tenantId },
+            transaction 
+        });
+
+        const owner = await User.findByPk(document.ownerId, { transaction });
+        const { url: downloadUrl } = await getDocumentDownloadUrl(document.id, owner); 
+
+        // Template Padrão (Fallback)
+        let emailBodyTemplate = tenantSettings?.finalEmailTemplate;
+        if (!emailBodyTemplate) {
+            emailBodyTemplate = `
+                <div style="font-family: sans-serif; color: #333; max-width: 600px; margin: 0 auto;">
+                    <h2 style="color: #2563EB;">Documento Finalizado</h2>
+                    <p>Olá, <strong>{{signer_name}}</strong>.</p>
+                    <p>O processo de assinatura do documento <strong>{{doc_title}}</strong> foi concluído por todas as partes.</p>
+                    <p>O documento possui validade jurídica e integridade garantida.</p>
+                    <p style="margin: 30px 0;">
+                        <a href="{{doc_link}}" style="background-color: #10B981; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; font-weight: bold; display: inline-block;">
+                            Baixar Documento Assinado
+                        </a>
+                    </p>
+                    <p><small style="color: #666;">ID do Documento: {{doc_id}}</small></p>
+                </div>
+            `;
+        }
+
+        let compiledBase = emailBodyTemplate
+            .replace(/{{doc_title}}/g, document.title)
+            .replace(/{{doc_link}}/g, downloadUrl)
+            .replace(/{{doc_id}}/g, document.id);
+
+        // Envio Assíncrono (não bloqueia a transação)
+        if (owner) {
+            const ownerHtml = compiledBase.replace(/{{signer_name}}/g, owner.name);
+            notificationService.sendEmail(document.tenantId, {
+                to: owner.email,
+                subject: `Documento Finalizado: ${document.title}`,
+                html: ownerHtml
+            }).catch(err => console.error("Erro ao notificar dono:", err.message));
+        }
+        
+        document.Signers.forEach(s => {
+             if (s.email) {
+                const signerHtml = compiledBase.replace(/{{signer_name}}/g, s.name);
+                notificationService.sendEmail(document.tenantId, {
+                    to: s.email,
+                    subject: `Cópia do Documento Assinado: ${document.title}`,
+                    html: signerHtml
+                }).catch(err => console.error(`Erro ao notificar signatário ${s.email}:`, err.message));
+             }
+        });
+
         await transaction.commit();
         return document;
 
     } catch (error) {
         await transaction.rollback();
+        console.error("Erro ao aplicar PAdES:", error);
         throw error;
     }
 };

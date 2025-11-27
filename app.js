@@ -71,8 +71,16 @@ const startServer = async () => {
     // --- INÍCIO: SEED AUTOMÁTICO ---
     console.log('🌱 Executando Seed de Inicialização...');
 
-    // A. GARANTIR OS 3 PLANOS (Se não existirem, cria)
+    // A. GARANTIR OS 4 PLANOS (Gratuito adicionado)
     const defaultPlans = [
+        { 
+            name: 'Gratuito', 
+            slug: 'gratuito', 
+            price: 0.00, 
+            userLimit: 1, // Apenas o dono
+            documentLimit: 3,
+            features: ['Assinatura eletrônica básica', 'Armazenamento limitado']
+        },
         { 
             name: 'Básico', 
             slug: 'basico', 
@@ -105,10 +113,11 @@ const startServer = async () => {
             defaults: planData
         });
         if (created) console.log(`✨ Plano criado: ${plan.name}`);
+        // Atualiza se existir (para garantir limites novos)
+        if (!created) await plan.update(planData);
     }
 
     // B. GARANTIR TENANT PRINCIPAL
-    // Pega o plano Empresa para atribuir ao Super Admin
     const enterprisePlan = await Plan.findOne({ where: { slug: 'empresa' } });
 
     const [mainTenant] = await Tenant.findOrCreate({
@@ -140,7 +149,6 @@ const startServer = async () => {
         });
         console.log(`✨ Usuário Super Admin CRIADO.`);
     } else {
-        // Correção de Role se necessário
         if (superAdminUser.role !== 'SUPER_ADMIN') {
             console.log(`⚠️ Promovendo usuário Admin para SUPER_ADMIN...`);
             superAdminUser.role = 'SUPER_ADMIN';
