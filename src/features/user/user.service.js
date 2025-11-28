@@ -80,14 +80,9 @@ const listAllUsersSystem = async () => {
   });
 };
 
-/**
- * Cria um novo usuário (Gestão Administrativa).
- * - Se for SUPER_ADMIN, pode especificar 'tenantId' no DTO para criar em outra empresa.
- * - Se for ADMIN, cria forçadamente na sua própria empresa.
- */
 const createUserByAdmin = async (adminUser, newUserDto) => {
-  // 1. Extraímos 'phone' além dos outros campos
-  const { name, email, password, role, cpf, phone, tenantId: targetTenantId } = newUserDto;
+  // 1. Extração dos dados
+  const { name, email, password, role, cpf, phone } = newUserDto;
 
   if (!name || !email || !password) {
     const error = new Error('Nome, e-mail e senha são obrigatórios.');
@@ -95,8 +90,7 @@ const createUserByAdmin = async (adminUser, newUserDto) => {
     throw error;
   }
 
-  // ... (Lógica de definição de tenant e validação de plano permanece igual) ...
-
+  // 2. Verifica se e-mail já existe
   const existingUser = await User.findOne({ where: { email } });
   if (existingUser) {
     const error = new Error('O e-mail fornecido já está em uso.');
@@ -104,22 +98,64 @@ const createUserByAdmin = async (adminUser, newUserDto) => {
     throw error;
   }
 
-  const passwordHash = await bcrypt.hash(password, 10);
+  const transaction = await sequelize.transaction();
 
-  // 2. Criação do Usuário com mapeamento correto
-  const newUser = await User.create({
-    name,
-    email,
-    passwordHash,
-    role: role || 'USER', 
-    tenantId: finalTenantId, 
-    status: 'ACTIVE',
-    cpf: cpf,                    // Adicionado mapeamento de CPF
-    phoneWhatsE164: phone        // CORREÇÃO: Mapeia 'phone' do front para 'phoneWhatsE164' do banco
-  });
+  try {
+    // 3. Preparação do Tenant (Organização)
+    let baseSlug = generateSlug(`${name}'s Org`);
+    let slug = baseSlug;
 
-  return newUser;
+    // Verifica colisão de slug
+    const slugExists = await Tenant.findOne({ where: { slug }, transaction });
+    if (slugExists) {
+        slug = `${baseSlug}-${Math.random().toString(36).substring(2, 6)}`;
+    }
+    
+    // Busca plano gratuito padrão
+    const freePlan = await Plan.findOne({ where: { slug: 'gratuito' }, transaction });
+
+    // 4. Cria o Tenant
+    const newTenant = await Tenant.create({ 
+        name: `${name}`, 
+        slug,
+        status: 'ACTIVE',
+        planId: freePlan ? freePlan.id : null
+    }, { transaction });
+
+    // 5. Hash da senha
+    const passwordHash = await bcrypt.hash(password, 10);
+
+    // 6. Cria o Usuário (Dono do novo Tenant)
+    // AQUI ESTA A CORREÇÃO DO CPF E TELEFONE
+    const newUser = await User.create({
+      name,
+      email,
+      passwordHash,
+      role: role || 'ADMIN', // Se não informado, nasce como ADMIN da própria empresa
+      tenantId: newTenant.id, 
+      status: 'ACTIVE',
+      cpf: cpf || null,             // Salva CPF
+      phoneWhatsE164: phone || null // Salva Telefone (mapeado corretamente)
+    }, { transaction });
+
+    // 7. Cria o registro de Membro
+    await TenantMember.create({ 
+        tenantId: newTenant.id,
+        userId: newUser.id, 
+        email: email,
+        role: newUser.role,
+        status: 'ACTIVE'
+    }, { transaction });
+
+    await transaction.commit();
+    return newUser;
+
+  } catch (error) {
+    await transaction.rollback();
+    throw error;
+  }
 };
+
 
 /**
  * Atualiza um usuário (Gestão Administrativa).
