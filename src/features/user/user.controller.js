@@ -31,7 +31,18 @@ const changePassword = async (req, res, next) => {
 
 const listUsers = async (req, res, next) => {
   try {
-    const users = await userService.listUsersByTenant(req.user.tenantId);
+    let users;
+
+    // --- CORREÇÃO AQUI ---
+    if (req.user.role === 'SUPER_ADMIN') {
+        // Se for Super Admin, busca TODOS os usuários do sistema
+        users = await userService.listAllUsersSystem();
+    } else {
+        // Se for Admin comum, busca apenas os usuários do seu Tenant
+        users = await userService.listUsersByTenant(req.user.tenantId);
+    }
+    // ---------------------
+
     res.status(200).json(users);
   } catch (error) {
     next(error);

@@ -155,11 +155,26 @@ const deleteUserByAdmin = async (adminUser, targetUserId) => {
   await userToDelete.destroy();
 };
 
+// --- NOVA FUNÇÃO: LISTAR TODOS DO SISTEMA (PARA SUPER ADMIN) ---
+const listAllUsersSystem = async () => {
+  return User.findAll({
+    order: [['createdAt', 'DESC']],
+    include: [
+      { 
+        model: Tenant, 
+        as: 'ownTenant', 
+        attributes: ['name', 'slug'] // Traz o nome da empresa do usuário
+      }
+    ]
+  });
+};
+
 module.exports = {
   updateUser,
   changeUserPassword,
   listUsersByTenant,
   createUserByAdmin,
   updateUserByAdmin,
-  deleteUserByAdmin
+  deleteUserByAdmin,
+  listAllUsersSystem
 };
