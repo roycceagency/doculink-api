@@ -60,8 +60,10 @@ const saveSession = async (userId, refreshToken) => {
 const registerUser = async (userData, { ip, userAgent } = {}) => {
   const { name, email, password, cpf, phone } = userData;
 
+  // 1. Validações Básicas
   if (!password || password.length < 6) throw new Error('A senha deve ter no mínimo 6 caracteres.');
 
+  // 2. Verifica se usuário já existe
   const existingUser = await User.scope('withPassword').findOne({ where: { email } });
   if (existingUser) throw new Error('Este e-mail já está em uso.');
 
@@ -69,13 +71,21 @@ const registerUser = async (userData, { ip, userAgent } = {}) => {
   
   const transaction = await sequelize.transaction();
   try {
-    let slug = generateSlug(`${name}'s Org`);
-    
-    // --- ALTERAÇÃO: Busca o plano GRATUITO para novos usuários ---
-    const freePlan = await Plan.findOne({ where: { slug: 'gratuito' }, transaction });
-    // -------------------------------------------------------------
+    // 3. Geração de Slug Robusta (Evita colisão no banco)
+    let baseSlug = generateSlug(`${name}'s Org`);
+    let slug = baseSlug;
 
-    // 1. Cria o Tenant Pessoal
+    // Verifica se já existe um tenant com esse slug para evitar erro de constraint
+    const slugExists = await Tenant.findOne({ where: { slug }, transaction });
+    if (slugExists) {
+        // Adiciona sufixo aleatório para garantir unicidade (ex: joao-org-a1b2)
+        slug = `${baseSlug}-${Math.random().toString(36).substring(2, 6)}`;
+    }
+    
+    // 4. Busca o plano gratuito
+    const freePlan = await Plan.findOne({ where: { slug: 'gratuito' }, transaction });
+
+    // 5. Cria o Tenant Pessoal
     const newTenant = await Tenant.create({ 
         name: `${name}`, 
         slug,
@@ -83,20 +93,28 @@ const registerUser = async (userData, { ip, userAgent } = {}) => {
         planId: freePlan ? freePlan.id : null // Começa no plano gratuito
     }, { transaction });
 
-    // 2. Cria o Usuário (Dono)
+    // 6. Cria o Usuário (Dono)
     const newUser = await User.create({
       name,
       email,
       passwordHash,
       cpf,
-      phoneWhatsE164: phone,
+      phoneWhatsE164: phone, // CORREÇÃO: Mapeia o telefone do front para o banco
       tenantId: newTenant.id,
-      role: 'ADMIN',
+      role: 'ADMIN', // Quem cria a conta é Admin do próprio tenant
       status: 'ACTIVE'
     }, { transaction });
     
-    await TenantMember.update({ userId: newUser.id }, { where: { email: email }, transaction });
+    // 7. Garante o registro na tabela de Membros
+    await TenantMember.create({ 
+        tenantId: newTenant.id,
+        userId: newUser.id, 
+        email: email,
+        role: 'ADMIN',
+        status: 'ACTIVE'
+    }, { transaction });
 
+    // 8. Auditoria
     await auditService.createEntry({
         tenantId: newTenant.id,
         actorKind: 'USER',
@@ -106,11 +124,12 @@ const registerUser = async (userData, { ip, userAgent } = {}) => {
         action: 'USER_CREATED',
         ip: ip || '0.0.0.0',
         userAgent: userAgent || 'System',
-        payload: { email, plan: 'gratuito' }
+        payload: { email, plan: 'gratuito', context: 'SELF_REGISTER' }
     }, transaction);
 
     await transaction.commit();
 
+    // 9. Gera Tokens e Sessão
     const { accessToken, refreshToken } = generateTokens(newUser, newTenant.id, 'ADMIN');
     await saveSession(newUser.id, refreshToken);
     
@@ -118,12 +137,22 @@ const registerUser = async (userData, { ip, userAgent } = {}) => {
     delete userToReturn.passwordHash;
 
     return { accessToken, refreshToken, user: userToReturn };
+
   } catch (error) {
     await transaction.rollback();
+    
+    // Tratamento de erro específico do Sequelize para Slugs ou Emails duplicados
+    if (error.name === 'SequelizeUniqueConstraintError') {
+        if (error.fields && error.fields.slug) {
+             throw new Error('Erro ao gerar identificador da organização. Por favor, tente novamente.');
+        }
+        if (error.fields && error.fields.email) {
+             throw new Error('Este e-mail já está em uso.');
+        }
+    }
     throw error;
   }
 };
-
 const loginUser = async (email, password, { ip, userAgent }) => {
   const user = await User.scope('withPassword').findOne({ where: { email } });
   
