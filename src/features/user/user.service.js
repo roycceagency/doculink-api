@@ -1,9 +1,21 @@
 // src/features/user/user.service.js
 'use strict';
 
-const { User, Tenant, Plan, TenantMember } = require('../../models');
+const { User, Tenant, Plan, TenantMember, sequelize } = require('../../models');
 const bcrypt = require('bcrypt');
 const { Op } = require('sequelize');
+
+/**
+ * Função auxiliar para gerar slug (igual ao auth.service)
+ */
+const generateSlug = (name) => {
+  return name
+    .toLowerCase()
+    .trim()
+    .replace(/[^\w\s-]/g, '')
+    .replace(/[\s_-]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+};
 
 /**
  * Atualiza o próprio perfil do usuário (Nome, Telefone).
@@ -80,6 +92,10 @@ const listAllUsersSystem = async () => {
   });
 };
 
+/**
+ * Cria um novo usuário com SUA PRÓPRIA ORGANIZAÇÃO.
+ * Lógica: Admin cria usuário -> Sistema cria Tenant -> Usuário vira Admin desse Tenant.
+ */
 const createUserByAdmin = async (adminUser, newUserDto) => {
   // 1. Extração dos dados
   const { name, email, password, role, cpf, phone } = newUserDto;
@@ -105,7 +121,7 @@ const createUserByAdmin = async (adminUser, newUserDto) => {
     let baseSlug = generateSlug(`${name}'s Org`);
     let slug = baseSlug;
 
-    // Verifica colisão de slug
+    // Verifica colisão de slug para evitar erro de banco
     const slugExists = await Tenant.findOne({ where: { slug }, transaction });
     if (slugExists) {
         slug = `${baseSlug}-${Math.random().toString(36).substring(2, 6)}`;
@@ -126,16 +142,16 @@ const createUserByAdmin = async (adminUser, newUserDto) => {
     const passwordHash = await bcrypt.hash(password, 10);
 
     // 6. Cria o Usuário (Dono do novo Tenant)
-    // AQUI ESTA A CORREÇÃO DO CPF E TELEFONE
+    // --- CORREÇÃO AQUI: tenantId usa newTenant.id ---
     const newUser = await User.create({
       name,
       email,
       passwordHash,
-      role: role || 'ADMIN', // Se não informado, nasce como ADMIN da própria empresa
-      tenantId: newTenant.id, 
+      role: role || 'ADMIN', 
+      tenantId: newTenant.id,       // <--- AQUI ESTAVA O ERRO (finalTenantId não existe mais)
       status: 'ACTIVE',
       cpf: cpf || null,             // Salva CPF
-      phoneWhatsE164: phone || null // Salva Telefone (mapeado corretamente)
+      phoneWhatsE164: phone || null // Salva Telefone
     }, { transaction });
 
     // 7. Cria o registro de Membro
@@ -156,11 +172,8 @@ const createUserByAdmin = async (adminUser, newUserDto) => {
   }
 };
 
-
 /**
  * Atualiza um usuário (Gestão Administrativa).
- * - SUPER_ADMIN: Pode editar qualquer usuário pelo ID.
- * - ADMIN: Só pode editar usuários do seu próprio tenant.
  */
 const updateUserByAdmin = async (adminUser, targetUserId, updateData) => {
   const whereClause = { id: targetUserId };
@@ -178,7 +191,7 @@ const updateUserByAdmin = async (adminUser, targetUserId, updateData) => {
     throw error;
   }
 
-  const allowedUpdates = ['name', 'role', 'status', 'email', 'phoneWhatsE164'];
+  const allowedUpdates = ['name', 'role', 'status', 'email', 'phoneWhatsE164', 'cpf'];
   const validUpdates = {};
   for (const key of allowedUpdates) {
     if (updateData[key] !== undefined) {
@@ -192,8 +205,6 @@ const updateUserByAdmin = async (adminUser, targetUserId, updateData) => {
 
 /**
  * Deleta um usuário (Gestão Administrativa).
- * - SUPER_ADMIN: Pode deletar qualquer usuário.
- * - ADMIN: Só pode deletar usuários do seu próprio tenant.
  */
 const deleteUserByAdmin = async (adminUser, targetUserId) => {
   if (adminUser.id === targetUserId) {
