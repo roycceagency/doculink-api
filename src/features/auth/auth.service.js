@@ -3,9 +3,10 @@
 
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
+const crypto = require('crypto'); // Importação trazida para o topo
 const { User, Tenant, Session, TenantMember, Plan, OtpCode, sequelize } = require('../../models');
-const notificationService = require('../../services/notification.service');
 const auditService = require('../audit/audit.service');
+const notificationService = require('../../services/notification.service');
 
 // --- FUNÇÕES AUXILIARES INTERNAS ---
 
@@ -19,21 +20,15 @@ const generateSlug = (name) => {
     .replace(/^-+|-+$/g, '');
 };
 
-/**
- * Gera tokens JWT.
- * @param {User} user - Objeto usuário.
- * @param {string} activeTenantId - O ID da organização que o usuário está acessando AGORA.
- * @param {string} activeRole - O papel do usuário NESTA organização (ADMIN/USER/SUPER_ADMIN).
- */
 const generateTokens = (user, activeTenantId, activeRole) => {
   const accessToken = jwt.sign(
     { 
       userId: user.id, 
-      tenantId: activeTenantId, // O Token agora carrega o contexto atual
-      role: activeRole          // E a permissão naquele contexto
+      tenantId: activeTenantId, 
+      role: activeRole          
     },
     process.env.JWT_SECRET,
-    { expiresIn: '1h' } // Expiração do Access Token
+    { expiresIn: '1h' }
   );
 
   const refreshToken = jwt.sign(
@@ -56,57 +51,70 @@ const saveSession = async (userId, refreshToken) => {
   });
 };
 
+/**
+ * Gera um OTP numérico de 6 dígitos compatível com versões antigas do Node.
+ */
+const generateSixDigitOtp = () => {
+  // Gera 4 bytes aleatórios e converte para um número inteiro sem sinal
+  const randomValue = crypto.randomBytes(4).readUInt32BE(0);
+  // Garante que o número esteja entre 100000 e 999999
+  const otp = (randomValue % 900000) + 100000;
+  return otp.toString();
+};
+
 // --- FUNÇÕES PRINCIPAIS ---
 
 const registerUser = async (userData, { ip, userAgent } = {}) => {
   const { name, email, password, cpf, phone } = userData;
 
-  // 1. Validações Básicas
   if (!password || password.length < 6) throw new Error('A senha deve ter no mínimo 6 caracteres.');
 
-  // 2. Verifica se usuário já existe
+  // Limpa CPF e Telefone (apenas números)
+  const cpfClean = cpf ? cpf.replace(/\D/g, '') : null;
+  const phoneClean = phone ? phone.replace(/\D/g, '') : null;
+
+  // Verifica e-mail
   const existingUser = await User.scope('withPassword').findOne({ where: { email } });
   if (existingUser) throw new Error('Este e-mail já está em uso.');
+
+  // Verifica CPF
+  if (cpfClean) {
+    const existingCpf = await User.findOne({ where: { cpf: cpfClean } });
+    if (existingCpf) throw new Error('Este CPF já está em uso.');
+  }
 
   const passwordHash = await bcrypt.hash(password, 10);
   
   const transaction = await sequelize.transaction();
   try {
-    // 3. Geração de Slug Robusta (Evita colisão no banco)
     let baseSlug = generateSlug(`${name}'s Org`);
     let slug = baseSlug;
 
-    // Verifica se já existe um tenant com esse slug para evitar erro de constraint
     const slugExists = await Tenant.findOne({ where: { slug }, transaction });
     if (slugExists) {
-        // Adiciona sufixo aleatório para garantir unicidade (ex: joao-org-a1b2)
         slug = `${baseSlug}-${Math.random().toString(36).substring(2, 6)}`;
     }
     
-    // 4. Busca o plano gratuito
     const freePlan = await Plan.findOne({ where: { slug: 'gratuito' }, transaction });
 
-    // 5. Cria o Tenant Pessoal
     const newTenant = await Tenant.create({ 
         name: `${name}`, 
         slug,
         status: 'ACTIVE',
-        planId: freePlan ? freePlan.id : null // Começa no plano gratuito
+        planId: freePlan ? freePlan.id : null 
     }, { transaction });
 
-    // 6. Cria o Usuário (Dono)
     const newUser = await User.create({
       name,
       email,
       passwordHash,
-      cpf,
-      phoneWhatsE164: phone, // CORREÇÃO: Mapeia o telefone do front para o banco
+      cpf: cpfClean,
+      phoneWhatsE164: phoneClean,
       tenantId: newTenant.id,
-      role: 'ADMIN', // Quem cria a conta é Admin do próprio tenant
+      role: 'ADMIN', 
       status: 'ACTIVE'
     }, { transaction });
     
-    // 7. Garante o registro na tabela de Membros
     await TenantMember.create({ 
         tenantId: newTenant.id,
         userId: newUser.id, 
@@ -115,7 +123,6 @@ const registerUser = async (userData, { ip, userAgent } = {}) => {
         status: 'ACTIVE'
     }, { transaction });
 
-    // 8. Auditoria
     await auditService.createEntry({
         tenantId: newTenant.id,
         actorKind: 'USER',
@@ -130,7 +137,6 @@ const registerUser = async (userData, { ip, userAgent } = {}) => {
 
     await transaction.commit();
 
-    // 9. Gera Tokens e Sessão
     const { accessToken, refreshToken } = generateTokens(newUser, newTenant.id, 'ADMIN');
     await saveSession(newUser.id, refreshToken);
     
@@ -142,18 +148,15 @@ const registerUser = async (userData, { ip, userAgent } = {}) => {
   } catch (error) {
     await transaction.rollback();
     
-    // Tratamento de erro específico do Sequelize para Slugs ou Emails duplicados
     if (error.name === 'SequelizeUniqueConstraintError') {
-        if (error.fields && error.fields.slug) {
-             throw new Error('Erro ao gerar identificador da organização. Por favor, tente novamente.');
-        }
-        if (error.fields && error.fields.email) {
-             throw new Error('Este e-mail já está em uso.');
-        }
+        if (error.fields && error.fields.slug) throw new Error('Erro ao gerar ID da organização.');
+        if (error.fields && error.fields.email) throw new Error('Este e-mail já está em uso.');
+        if (error.fields && error.fields.cpf) throw new Error('Este CPF já está em uso.');
     }
     throw error;
   }
 };
+
 const loginUser = async (email, password, { ip, userAgent }) => {
   const user = await User.scope('withPassword').findOne({ where: { email } });
   
@@ -162,15 +165,12 @@ const loginUser = async (email, password, { ip, userAgent }) => {
   const isMatch = await bcrypt.compare(password, user.passwordHash);
   if (!isMatch) throw new Error('Credenciais inválidas.');
   
-  // Por padrão, loga no Tenant Pessoal
   const activeTenantId = user.tenantId;
   
-  // --- CORREÇÃO: Verifica se é SUPER_ADMIN ---
   let activeRole = 'ADMIN';
   if (user.role === 'SUPER_ADMIN') {
     activeRole = 'SUPER_ADMIN';
   }
-  // ------------------------------------------
 
   const { accessToken, refreshToken } = generateTokens(user, activeTenantId, activeRole);
   await saveSession(user.id, refreshToken);
@@ -193,9 +193,6 @@ const loginUser = async (email, password, { ip, userAgent }) => {
   return { accessToken, refreshToken, user: userToReturn };
 };
 
-/**
- * Permite trocar o contexto de acesso para outro Tenant (se for membro).
- */
 const switchTenantContext = async (userId, targetTenantId, { ip, userAgent }) => {
   const user = await User.findByPk(userId);
   if (!user) throw new Error('Usuário não encontrado.');
@@ -203,13 +200,10 @@ const switchTenantContext = async (userId, targetTenantId, { ip, userAgent }) =>
   let newRole = 'USER';
   let authorized = false;
 
-  // 1. Verifica se é o Tenant Pessoal
   if (user.tenantId === targetTenantId) {
     authorized = true;
-    // --- CORREÇÃO: Mantém role de SUPER_ADMIN se for o caso ---
     newRole = (user.role === 'SUPER_ADMIN') ? 'SUPER_ADMIN' : 'ADMIN';
   } else {
-    // 2. Verifica se é membro convidado
     const membership = await TenantMember.findOne({
       where: { 
         userId, 
@@ -228,11 +222,9 @@ const switchTenantContext = async (userId, targetTenantId, { ip, userAgent }) =>
     throw new Error('Você não tem permissão para acessar esta organização.');
   }
 
-  // Gera novos tokens com o novo tenantId e role
   const { accessToken, refreshToken } = generateTokens(user, targetTenantId, newRole);
   await saveSession(user.id, refreshToken);
 
-  // Loga a troca de contexto
   await auditService.createEntry({
     tenantId: targetTenantId,
     actorKind: 'USER',
@@ -250,11 +242,9 @@ const switchTenantContext = async (userId, targetTenantId, { ip, userAgent }) =>
 
 const handleRefreshToken = async (refreshTokenFromRequest) => {
   try {
-    // Decodifica sem verificar primeiro para pegar dados
     const decoded = jwt.decode(refreshTokenFromRequest);
     if (!decoded) throw new Error('Token malformado');
 
-    // Verifica validade real
     jwt.verify(refreshTokenFromRequest, process.env.JWT_REFRESH_SECRET);
 
     const sessions = await Session.findAll({ where: { userId: decoded.userId } });
@@ -272,13 +262,10 @@ const handleRefreshToken = async (refreshTokenFromRequest) => {
     
     const user = await User.findByPk(decoded.userId);
     
-    // Mantém o mesmo Tenant ID do token anterior (Contexto Persistente)
     const currentTenantId = decoded.tenantId || user.tenantId;
     
-    // Precisamos descobrir o role neste tenant novamente
     let role = 'USER';
     if (currentTenantId === user.tenantId) {
-      // --- CORREÇÃO: Mantém SUPER_ADMIN ---
       role = (user.role === 'SUPER_ADMIN') ? 'SUPER_ADMIN' : 'ADMIN';
     } else {
       const mem = await TenantMember.findOne({ where: { userId: user.id, tenantId: currentTenantId }});
@@ -304,46 +291,50 @@ const handleLogout = async (refreshToken, user) => {
 };
 
 const requestPasswordReset = async (email, channel = 'EMAIL') => {
-  // Busca o usuário
   const user = await User.findOne({ where: { email } });
   
   if (!user) {
-    // Security by obscurity: não avisar se não existe, para evitar enumeração
-    // Mas se for WhatsApp, precisamos avisar se não tiver telefone cadastrado caso o user exista.
-    return; 
+    return; // Silently fail to avoid enumeration
   }
 
-  // Validação específica para WhatsApp
   if (channel === 'WHATSAPP') {
     if (!user.phoneWhatsE164) {
       throw new Error('Este usuário não possui um número de WhatsApp cadastrado. Tente por e-mail.');
     }
   }
 
-  // Gera OTP
-  const otp = crypto.randomInt(100000, 999999).toString();
-  const codeHash = await bcrypt.hash(otp, 10);
-  const expiresAt = new Date(Date.now() + 15 * 60 * 1000); // 15 min
+  // --- CORREÇÃO APLICADA AQUI: Substituição do randomInt por randomBytes ---
+  const otp = generateSixDigitOtp();
+  // --------------------------------------------------------------------------
 
-  // Salva o código
+  const codeHash = await bcrypt.hash(otp, 10);
+  const expiresAt = new Date(Date.now() + 15 * 60 * 1000); 
+
   await OtpCode.create({
-    recipient: channel === 'WHATSAPP' ? user.phoneWhatsE164 : email, // Salva o destino correto
+    recipient: channel === 'WHATSAPP' ? user.phoneWhatsE164 : email, 
     channel: channel,
     codeHash,
     expiresAt,
     context: 'PASSWORD_RESET'
   });
 
-  // Envia a notificação
   await notificationService.sendForgotPasswordNotification(user, otp, channel);
 };
 
 const resetPassword = async (email, otp, newPassword) => {
+  const user = await User.findOne({ where: { email } });
+  if (!user) throw new Error('Usuário não encontrado.');
+
   const transaction = await sequelize.transaction();
   try {
-    // Busca o OTP válido
+    const possibleRecipients = [email];
+    if (user.phoneWhatsE164) possibleRecipients.push(user.phoneWhatsE164);
+
     const otpRecord = await OtpCode.findOne({
-      where: { recipient: email, context: 'PASSWORD_RESET' },
+      where: { 
+        recipient: { [require('sequelize').Op.in]: possibleRecipients }, 
+        context: 'PASSWORD_RESET' 
+      },
       order: [['createdAt', 'DESC']],
       transaction
     });
@@ -357,15 +348,10 @@ const resetPassword = async (email, otp, newPassword) => {
       throw new Error('Código incorreto.');
     }
 
-    // Atualiza a senha
-    const user = await User.scope('withPassword').findOne({ where: { email }, transaction });
-    if (!user) throw new Error('Usuário não encontrado.');
-
     const newPasswordHash = await bcrypt.hash(newPassword, 10);
     
     await user.update({ passwordHash: newPasswordHash }, { transaction });
     
-    // Queima o token
     await otpRecord.destroy({ transaction });
 
     await transaction.commit();
@@ -382,6 +368,6 @@ module.exports = {
   handleRefreshToken,
   handleLogout,
   switchTenantContext,
-  resetPassword,
-  requestPasswordReset
+  requestPasswordReset,
+  resetPassword
 };
