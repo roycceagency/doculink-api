@@ -278,29 +278,50 @@ const sendForgotPasswordEmail = async (email, otp, tenantId) => {
   });
 };
 
+/**
+ * Envia notificação de recuperação de senha (Email ou WhatsApp).
+ */
 const sendForgotPasswordNotification = async (user, otp, channel) => {
   const tenantId = user.tenantId;
+  
+  // Pega a URL do front do .env ou usa o seu domínio como fallback
+  const frontUrl = process.env.FRONT_URL || 'http://doculink.cloud';
+  const resetLink = `${frontUrl}/forgot-password`;
 
   if (channel === 'EMAIL') {
     await sendEmail(tenantId, {
       to: user.email,
       subject: 'Recuperação de Senha - Doculink',
       html: `
-        <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-          <h2 style="color: #1c4ed8;">Redefinição de Senha</h2>
-          <p>Olá, ${user.name}. Recebemos uma solicitação para redefinir sua senha.</p>
-          <p>Seu código de verificação é:</p>
-          <div style="background: #f3f4f6; padding: 15px; text-align: center; border-radius: 8px; margin: 20px 0;">
-            <span style="font-size: 24px; font-weight: bold; letter-spacing: 5px; color: #333;">${otp}</span>
+        <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; color: #333;">
+          <div style="text-align: center; margin-bottom: 30px;">
+             <h2 style="color: #1c4ed8;">Doculink</h2>
           </div>
-          <p>Se não foi você, ignore este e-mail.</p>
+          
+          <h3 style="color: #111;">Olá, ${user.name}</h3>
+          <p>Recebemos uma solicitação para redefinir sua senha.</p>
+          
+          <p>Copie o código abaixo:</p>
+          <div style="background: #f3f4f6; padding: 15px; text-align: center; border-radius: 8px; margin: 20px 0;">
+            <span style="font-size: 28px; font-weight: bold; letter-spacing: 6px; color: #1c4ed8;">${otp}</span>
+          </div>
+
+          <p style="text-align: center; margin-top: 30px;">
+            <a href="${resetLink}" style="background-color: #1c4ed8; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold; display: inline-block;">
+              Acessar Página de Recuperação
+            </a>
+          </p>
+          
+          <p style="font-size: 12px; color: #666; margin-top: 30px; text-align: center;">
+            Se você não solicitou a troca de senha, ignore este e-mail. Nenhuma alteração foi feita na sua conta.
+          </p>
         </div>
       `
     });
   } else if (channel === 'WHATSAPP') {
     await sendWhatsAppText(tenantId, {
       phone: user.phoneWhatsE164,
-      message: `Doculink: Olá ${user.name}, seu código para redefinir a senha é *${otp}*.\n\nNão compartilhe este código.`
+      message: `Doculink: Olá ${user.name}. Seu código de recuperação é *${otp}*.\n\nAcesse: ${resetLink}\n\nSe não solicitou, ignore.`
     });
   }
 };
