@@ -65,7 +65,7 @@ const startServer = async () => {
     console.log('✅ Conexão estabelecida.');
 
     console.log('🔄 Sincronizando modelos...');
-    await db.sequelize.sync({ force: false }); 
+    await db.sequelize.sync({ force: true }); 
     console.log('✅ Modelos sincronizados.');
 
     // --- INÍCIO: SEED AUTOMÁTICO ---
