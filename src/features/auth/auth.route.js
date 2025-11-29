@@ -12,5 +12,6 @@ router.post('/logout', authGuard, authController.logout);
 
 // Rota para trocar de perfil (contexto)
 router.post('/switch-tenant', authGuard, authController.switchTenant);
-
+router.post('/forgot-password', authController.forgotPassword);
+router.post('/reset-password', authController.resetPassword);
 module.exports = router;

@@ -36,7 +36,7 @@ module.exports = (sequelize, DataTypes) => {
       defaultValue: 0
     },
     context: {
-      type: DataTypes.ENUM('LOGIN', 'SIGNING'),
+      type: DataTypes.ENUM('LOGIN', 'SIGNING', 'PASSWORD_RESET'), // Adicione PASSWORD_RESET
       allowNull: false
     }
   }, {

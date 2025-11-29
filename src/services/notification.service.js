@@ -260,15 +260,60 @@ const sendOtp = async (recipient, channel, otp, tenantId) => {
   }
 };
 
+const sendForgotPasswordEmail = async (email, otp, tenantId) => {
+  await sendEmail(tenantId, {
+    to: email,
+    subject: 'Recuperação de Senha - Doculink',
+    html: `
+      <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <h2 style="color: #1c4ed8;">Redefinição de Senha</h2>
+        <p>Recebemos uma solicitação para redefinir a senha da sua conta.</p>
+        <p>Use o código abaixo para prosseguir:</p>
+        <div style="background: #f3f4f6; padding: 15px; text-align: center; border-radius: 8px; margin: 20px 0;">
+          <span style="font-size: 24px; font-weight: bold; letter-spacing: 5px; color: #333;">${otp}</span>
+        </div>
+        <p>Se você não solicitou isso, ignore este e-mail.</p>
+      </div>
+    `
+  });
+};
+
+const sendForgotPasswordNotification = async (user, otp, channel) => {
+  const tenantId = user.tenantId;
+
+  if (channel === 'EMAIL') {
+    await sendEmail(tenantId, {
+      to: user.email,
+      subject: 'Recuperação de Senha - Doculink',
+      html: `
+        <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+          <h2 style="color: #1c4ed8;">Redefinição de Senha</h2>
+          <p>Olá, ${user.name}. Recebemos uma solicitação para redefinir sua senha.</p>
+          <p>Seu código de verificação é:</p>
+          <div style="background: #f3f4f6; padding: 15px; text-align: center; border-radius: 8px; margin: 20px 0;">
+            <span style="font-size: 24px; font-weight: bold; letter-spacing: 5px; color: #333;">${otp}</span>
+          </div>
+          <p>Se não foi você, ignore este e-mail.</p>
+        </div>
+      `
+    });
+  } else if (channel === 'WHATSAPP') {
+    await sendWhatsAppText(tenantId, {
+      phone: user.phoneWhatsE164,
+      message: `Doculink: Olá ${user.name}, seu código para redefinir a senha é *${otp}*.\n\nNão compartilhe este código.`
+    });
+  }
+};
+
 module.exports = {
   // Funções de Negócio
   sendSignInvite,
   sendOtp,
-  
+  sendForgotPasswordEmail,
   // Funções Core (Exportadas para uso genérico, ex: notificação de conclusão)
   sendEmail,
   sendWhatsAppText,
-  
+  sendForgotPasswordNotification,
   // Utilitários
   formatPhoneNumber
 };

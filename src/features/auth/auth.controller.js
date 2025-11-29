@@ -62,4 +62,24 @@ const switchTenant = async (req, res, next) => {
   }
 };
 
-module.exports = { register, login, refreshToken, logout, switchTenant };
+const forgotPassword = async (req, res, next) => {
+  try {
+    const { email, channel } = req.body; // Pega o channel (EMAIL ou WHATSAPP)
+    await authService.requestPasswordReset(email, channel);
+    res.status(200).json({ message: 'Código enviado com sucesso (se os dados conferirem).' });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const resetPassword = async (req, res, next) => {
+  try {
+    const { email, otp, newPassword } = req.body;
+    await authService.resetPassword(email, otp, newPassword);
+    res.status(200).json({ message: 'Senha redefinida com sucesso.' });
+  } catch (error) {
+    next(error);
+  }
+};
+
+module.exports = { register, login, refreshToken, logout, switchTenant, resetPassword, forgotPassword };

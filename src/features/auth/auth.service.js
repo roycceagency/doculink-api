@@ -3,7 +3,8 @@
 
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
-const { User, Tenant, Session, TenantMember, Plan, sequelize } = require('../../models');
+const { User, Tenant, Session, TenantMember, Plan, OtpCode, sequelize } = require('../../models');
+const notificationService = require('../../services/notification.service');
 const auditService = require('../audit/audit.service');
 
 // --- FUNÇÕES AUXILIARES INTERNAS ---
@@ -302,10 +303,85 @@ const handleLogout = async (refreshToken, user) => {
     }
 };
 
+const requestPasswordReset = async (email, channel = 'EMAIL') => {
+  // Busca o usuário
+  const user = await User.findOne({ where: { email } });
+  
+  if (!user) {
+    // Security by obscurity: não avisar se não existe, para evitar enumeração
+    // Mas se for WhatsApp, precisamos avisar se não tiver telefone cadastrado caso o user exista.
+    return; 
+  }
+
+  // Validação específica para WhatsApp
+  if (channel === 'WHATSAPP') {
+    if (!user.phoneWhatsE164) {
+      throw new Error('Este usuário não possui um número de WhatsApp cadastrado. Tente por e-mail.');
+    }
+  }
+
+  // Gera OTP
+  const otp = crypto.randomInt(100000, 999999).toString();
+  const codeHash = await bcrypt.hash(otp, 10);
+  const expiresAt = new Date(Date.now() + 15 * 60 * 1000); // 15 min
+
+  // Salva o código
+  await OtpCode.create({
+    recipient: channel === 'WHATSAPP' ? user.phoneWhatsE164 : email, // Salva o destino correto
+    channel: channel,
+    codeHash,
+    expiresAt,
+    context: 'PASSWORD_RESET'
+  });
+
+  // Envia a notificação
+  await notificationService.sendForgotPasswordNotification(user, otp, channel);
+};
+
+const resetPassword = async (email, otp, newPassword) => {
+  const transaction = await sequelize.transaction();
+  try {
+    // Busca o OTP válido
+    const otpRecord = await OtpCode.findOne({
+      where: { recipient: email, context: 'PASSWORD_RESET' },
+      order: [['createdAt', 'DESC']],
+      transaction
+    });
+
+    if (!otpRecord || new Date() > new Date(otpRecord.expiresAt)) {
+      throw new Error('Código inválido ou expirado.');
+    }
+
+    const isMatch = await bcrypt.compare(otp, otpRecord.codeHash);
+    if (!isMatch) {
+      throw new Error('Código incorreto.');
+    }
+
+    // Atualiza a senha
+    const user = await User.scope('withPassword').findOne({ where: { email }, transaction });
+    if (!user) throw new Error('Usuário não encontrado.');
+
+    const newPasswordHash = await bcrypt.hash(newPassword, 10);
+    
+    await user.update({ passwordHash: newPasswordHash }, { transaction });
+    
+    // Queima o token
+    await otpRecord.destroy({ transaction });
+
+    await transaction.commit();
+    return { message: 'Senha alterada com sucesso.' };
+  } catch (error) {
+    await transaction.rollback();
+    throw error;
+  }
+};
+
 module.exports = {
   registerUser,
   loginUser,
   handleRefreshToken,
   handleLogout,
-  switchTenantContext
+  switchTenantContext,
+  resetPassword,
+  requestPasswordReset
 };
