@@ -55,13 +55,13 @@ const changeUserPassword = async (user, currentPassword, newPassword) => {
     error.statusCode = 403;
     throw error;
   }
-  
+
   if (!newPassword || newPassword.length < 6) {
     const error = new Error('A nova senha deve ter no mínimo 6 caracteres.');
     error.statusCode = 400;
     throw error;
   }
-  
+
   userWithPassword.passwordHash = await bcrypt.hash(newPassword, 10);
   await userWithPassword.save();
 };
@@ -70,9 +70,9 @@ const changeUserPassword = async (user, currentPassword, newPassword) => {
  * Lista usuários de um Tenant específico (Para ADMIN comum).
  */
 const listUsersByTenant = async (tenantId) => {
-  return User.findAll({ 
-      where: { tenantId },
-      order: [['name', 'ASC']] 
+  return User.findAll({
+    where: { tenantId },
+    order: [['name', 'ASC']]
   });
 };
 
@@ -83,10 +83,10 @@ const listAllUsersSystem = async () => {
   return User.findAll({
     order: [['createdAt', 'DESC']],
     include: [
-      { 
-        model: Tenant, 
-        as: 'ownTenant', 
-        attributes: ['name', 'slug'] 
+      {
+        model: Tenant,
+        as: 'ownTenant',
+        attributes: ['name', 'slug']
       }
     ]
   });
@@ -110,7 +110,7 @@ const createUserByAdmin = async (adminUser, newUserDto) => {
   const existingUser = await User.findOne({ where: { email } });
   if (existingUser) {
     const error = new Error('O e-mail fornecido já está em uso.');
-    error.statusCode = 409; 
+    error.statusCode = 409;
     throw error;
   }
 
@@ -124,18 +124,18 @@ const createUserByAdmin = async (adminUser, newUserDto) => {
     // Verifica colisão de slug para evitar erro de banco
     const slugExists = await Tenant.findOne({ where: { slug }, transaction });
     if (slugExists) {
-        slug = `${baseSlug}-${Math.random().toString(36).substring(2, 6)}`;
+      slug = `${baseSlug}-${Math.random().toString(36).substring(2, 6)}`;
     }
-    
+
     // Busca plano gratuito padrão
     const freePlan = await Plan.findOne({ where: { slug: 'gratuito' }, transaction });
 
     // 4. Cria o Tenant
-    const newTenant = await Tenant.create({ 
-        name: `${name}`, 
-        slug,
-        status: 'ACTIVE',
-        planId: freePlan ? freePlan.id : null
+    const newTenant = await Tenant.create({
+      name: `${name}`,
+      slug,
+      status: 'ACTIVE',
+      planId: freePlan ? freePlan.id : null
     }, { transaction });
 
     // 5. Hash da senha
@@ -147,7 +147,7 @@ const createUserByAdmin = async (adminUser, newUserDto) => {
       name,
       email,
       passwordHash,
-      role: role || 'ADMIN', 
+      role: role || 'ADMIN',
       tenantId: newTenant.id,       // <--- AQUI ESTAVA O ERRO (finalTenantId não existe mais)
       status: 'ACTIVE',
       cpf: cpf || null,             // Salva CPF
@@ -155,12 +155,12 @@ const createUserByAdmin = async (adminUser, newUserDto) => {
     }, { transaction });
 
     // 7. Cria o registro de Membro
-    await TenantMember.create({ 
-        tenantId: newTenant.id,
-        userId: newUser.id, 
-        email: email,
-        role: newUser.role,
-        status: 'ACTIVE'
+    await TenantMember.create({
+      tenantId: newTenant.id,
+      userId: newUser.id,
+      email: email,
+      role: newUser.role,
+      status: 'ACTIVE'
     }, { transaction });
 
     await transaction.commit();
@@ -180,7 +180,7 @@ const updateUserByAdmin = async (adminUser, targetUserId, updateData) => {
 
   // Se NÃO for Super Admin, restringe a busca ao tenant do admin
   if (adminUser.role !== 'SUPER_ADMIN') {
-      whereClause.tenantId = adminUser.tenantId;
+    whereClause.tenantId = adminUser.tenantId;
   }
 
   const userToUpdate = await User.findOne({ where: whereClause });
@@ -197,6 +197,19 @@ const updateUserByAdmin = async (adminUser, targetUserId, updateData) => {
     if (updateData[key] !== undefined) {
       validUpdates[key] = updateData[key];
     }
+  }
+
+  // --- CORREÇÃO: Mapeamento de 'phone' para 'phoneWhatsE164' ---
+  if (updateData.phone) {
+    validUpdates.phoneWhatsE164 = updateData.phone;
+  }
+
+  // --- PROTEÇÃO: Evitar downgrade acidental de SUPER_ADMIN ---
+  // Se o usuário alvo é SUPER_ADMIN e a payload tenta mudar role para algo que não seja SUPER_ADMIN,
+  // Bloquear ou ignorar, a menos que a intenção seja explícita e válida.
+  // Aqui, se o usuário já é SUPER_ADMIN e o front manda 'ADMIN' (por falta de opção no select), ignoramos a mudança de role.
+  if (userToUpdate.role === 'SUPER_ADMIN' && validUpdates.role && validUpdates.role !== 'SUPER_ADMIN') {
+    delete validUpdates.role;
   }
 
   await userToUpdate.update(validUpdates);
@@ -217,7 +230,7 @@ const deleteUserByAdmin = async (adminUser, targetUserId) => {
 
   // Se NÃO for Super Admin, restringe a busca ao tenant do admin
   if (adminUser.role !== 'SUPER_ADMIN') {
-      whereClause.tenantId = adminUser.tenantId;
+    whereClause.tenantId = adminUser.tenantId;
   }
 
   const userToDelete = await User.findOne({ where: whereClause });

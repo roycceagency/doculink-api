@@ -27,18 +27,14 @@ const embedSignatures = async (originalPdfPath, signers, documentData) => {
     // Pega a última página (ou cria uma nova se não couber, mas aqui vamos na ultima)
     // Se quiser adicionar uma página de logs separada (como na img1), a lógica seria: pdfDoc.addPage()
     // Aqui faremos desenhado na página (estilo img2)
-    let page = pdfDoc.getPage(pdfDoc.getPageCount() - 1);
-    const { width: pageWidth, height: pageHeight } = page.getSize();
+    // Pega a última página para ver dimensões, mas SEMPRE cria uma nova para assinar
+    // Isso evita sobreposição em documentos cheios
+    let lastPage = pdfDoc.getPage(pdfDoc.getPageCount() - 1);
+    const { width: pageWidth, height: pageHeight } = lastPage.getSize();
     
-    const signedSigners = signers.filter(s => s.status === 'SIGNED');
-
-    // Se tiver muitos signatários, adiciona nova página de logs
-    const requiredHeight = signedSigners.length * (stampHeight + 20) + 100;
-    if (requiredHeight > pageHeight) {
-        page = pdfDoc.addPage();
-    }
-
-    let currentY = page.getHeight() - 50; // Começa do topo
+    // Adiciona SEMPRE uma nova página para garantir que não cubra nada
+    let page = pdfDoc.addPage();
+    let currentY = page.getHeight() - 50; // Começa do topo da NOVA página
 
     // Título da página de assinaturas se for nova página ou apenas rodapé
     page.drawText('Registro de Assinaturas', {
